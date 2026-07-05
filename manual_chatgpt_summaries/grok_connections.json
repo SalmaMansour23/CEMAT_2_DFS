@@ -2,11 +2,20 @@
   "connections": [
     {
       "from_block": "C_GROUP",
+      "from_port": "G_LINK",
+      "to_block": "C_DRV_1D",
+      "to_port": "GR_LINK1",
+      "reason": "Group/Object link connection",
+      "confidence": 0.95,
+      "inverted": false
+    },
+    {
+      "from_block": "C_GROUP",
       "from_port": "CmdOn",
       "to_block": "C_DRV_1D",
       "to_port": "StartAut",
-      "reason": "C_GROUP's CmdOn is the normal start command for C_DRV_1D",
-      "confidence": 1.0,
+      "reason": "Automatic start command",
+      "confidence": 0.9,
       "inverted": false
     },
     {
@@ -14,8 +23,8 @@
       "from_port": "PeCmdOff",
       "to_block": "C_DRV_1D",
       "to_port": "StopAut",
-      "reason": "C_GROUP's PeCmdOff is the recommended continuous OFF command for C_DRV_1D",
-      "confidence": 1.0,
+      "reason": "Automatic stop command",
+      "confidence": 0.9,
       "inverted": false
     },
     {
@@ -23,8 +32,8 @@
       "from_port": "QuicStpQ",
       "to_block": "C_DRV_1D",
       "to_port": "QuickStp",
-      "reason": "C_GROUP's QuicStpQ must connect to C_DRV_1D's QuickStp for immediate stopping",
-      "confidence": 1.0,
+      "reason": "Quick-stop command",
+      "confidence": 0.9,
       "inverted": false
     },
     {
@@ -32,8 +41,8 @@
       "from_port": "RunSig",
       "to_block": "C_GROUP",
       "to_port": "FbObjOn",
-      "reason": "C_DRV_1D's RunSig provides running feedback to C_GROUP",
-      "confidence": 1.0,
+      "reason": "Running feedback",
+      "confidence": 0.9,
       "inverted": false
     },
     {
@@ -41,41 +50,10 @@
       "from_port": "RunSig",
       "to_block": "C_GROUP",
       "to_port": "FbObjOff",
-      "reason": "C_DRV_1D's RunSig (negated) provides stopped feedback to C_GROUP",
-      "confidence": 1.0,
+      "reason": "Stopped feedback (inverted)",
+      "confidence": 0.8,
       "inverted": true
     }
   ],
-  "uncertain_connections": [
-    {
-      "from_block": "C_GROUP",
-      "from_port": "AutModOn",
-      "to_block": "C_DRV_1D",
-      "to_port": "AutModOn",
-      "reason": "Connection depends on Feature.bit25 being TRUE on both blocks",
-      "confidence": 0.5,
-      "inverted": false,
-      "note": "Automatic mode transfer via GR_LINK is uncertain without Feature.bit25 confirmation"
-    },
-    {
-      "from_block": "C_GROUP",
-      "from_port": "ManModOn",
-      "to_block": "C_DRV_1D",
-      "to_port": "ManModOn",
-      "reason": "Connection depends on Feature.bit25 being TRUE on both blocks",
-      "confidence": 0.5,
-      "inverted": false,
-      "note": "Manual mode transfer via GR_LINK is uncertain without Feature.bit25 confirmation"
-    },
-    {
-      "from_block": "C_GROUP",
-      "from_port": "LocModOn",
-      "to_block": "C_DRV_1D",
-      "to_port": "LocModOn",
-      "reason": "Connection depends on Feature.bit25 being TRUE on both blocks",
-      "confidence": 0.5,
-      "inverted": false,
-      "note": "Local mode transfer via GR_LINK is uncertain without Feature.bit25 confirmation"
-    }
-  ]
+  "uncertain_connections": []
 }

@@ -100,14 +100,15 @@ RATE_LIMIT_MAX_AUTO_WAIT = 120
 
 
 def _parse_retry_seconds(message: str):
-    """Pull the "Please try again in Xm Ys" / "in Xs" suggestion out of a
-    Groq rate-limit error message, so we wait exactly as long as Groq
-    says instead of guessing with a fixed backoff."""
-    match = re.search(r"try again in (?:(\d+)m)?(\d+(?:\.\d+)?)s", message)
+    """Pull the "Please try again in Xh Ym Zs" / "Xm Ys" / "Xs" suggestion
+    out of a Groq rate-limit error message, so we wait exactly as long as
+    Groq says instead of guessing with a fixed backoff."""
+    match = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s", message)
     if not match:
         return None
-    minutes = float(match.group(1)) if match.group(1) else 0.0
-    return minutes * 60 + float(match.group(2))
+    hours = float(match.group(1)) if match.group(1) else 0.0
+    minutes = float(match.group(2)) if match.group(2) else 0.0
+    return hours * 3600 + minutes * 60 + float(match.group(3))
 
 
 def call_model_json(system_prompt: str, user_prompt: str) -> dict:
@@ -545,6 +546,27 @@ GROUP <-> COMPONENT LINK CONNECTION IS MANDATORY - NEVER SKIP, NEVER UNCERTAIN:
   true for a normal, single-instance setup even when the manual also
   discusses other configurations (multiple groups/routes, multiplexers)
   that don't apply here.
+- CRITICAL - GETTING THE DIRECTION RIGHT: the "*LINK*" port name that
+  contains "LINK" can legitimately appear on EITHER side as an input
+  in one block and as an output in the other - do not assume which
+  block is the source just because it "feels" like the group should
+  send it or a component should send it. You must check literally:
+  1. Look at BlockA's "outputs" list and BlockB's "outputs" list - find
+     which one of the two actually contains a "*LINK*" entry in its
+     OWN "outputs" array (not inputs).
+  2. Look at the OTHER block's "inputs" list - confirm it contains a
+     matching "*LINK*" entry in its OWN "inputs" array (not outputs).
+  3. The block whose "outputs" array literally contains the "*LINK*"
+     port is "from_block"/"from_port". The block whose "inputs" array
+     literally contains the matching "*LINK*" port is "to_block"/
+     "to_port". Never reverse this - a port that is listed under a
+     block's "inputs" can NEVER be that block's "from_port", and a
+     port listed under a block's "outputs" can NEVER be that block's
+     "to_port".
+  4. Before finalizing this connection, re-check both port lists one
+     more time to confirm from_port truly sits in from_block's
+     "outputs" and to_port truly sits in to_block's "inputs" - if it
+     is reversed, swap from_block/from_port with to_block/to_port.
 - Do NOT push this into "uncertain_connections" and do NOT leave it out
   entirely. A missing group/component link is one of the most serious
   errors possible here, since it is what physically attaches the
@@ -632,13 +654,30 @@ def validate_connections(connections: list, blocks_by_name: dict) -> list:
     for c in connections:
         from_block, from_port = c.get("from_block"), c.get("from_port")
         to_block, to_port = c.get("to_block"), c.get("to_port")
+
+        if has_output(from_block, from_port) and has_input(to_block, to_port):
+            valid.append(c)
+            continue
+
+        # The model occasionally reports a real connection with the
+        # direction reversed (e.g. swaps a group's LINK output with a
+        # component's LINK input). If flipping from/to makes both ends
+        # check out against the real port lists, auto-correct instead of
+        # silently dropping a connection that actually exists.
+        if has_output(to_block, to_port) and has_input(from_block, from_port):
+            swapped = dict(c)
+            swapped["from_block"], swapped["from_port"] = to_block, to_port
+            swapped["to_block"], swapped["to_port"] = from_block, from_port
+            print(f"  Auto-correcting reversed connection direction: {c}")
+            valid.append(swapped)
+            continue
+
         if not has_output(from_block, from_port):
             print(f"  Dropping connection - '{from_port}' is not an output of {from_block}: {c}")
-            continue
-        if not has_input(to_block, to_port):
+        elif not has_input(to_block, to_port):
             print(f"  Dropping connection - '{to_port}' is not an input of {to_block}: {c}")
-            continue
-        valid.append(c)
+        else:
+            print(f"  Dropping connection - direction/ports could not be validated: {c}")
     return valid
 
 
