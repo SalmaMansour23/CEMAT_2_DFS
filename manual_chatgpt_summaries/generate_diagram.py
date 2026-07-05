@@ -2,8 +2,22 @@
 Generalized, multi-block pipeline (no longer hardcoded to C_GROUP + C_DRV_1D):
 
 1. Discover every block by scanning io_jsons/*.json - each file holds the
-   REAL, standard input/output ports for one Siemens CEMAT block (ground
-   truth, not something an LLM has to guess).
+   DEFAULT, standard input/output ports for one Siemens CEMAT block
+   (ground truth for the generic case, not something an LLM has to
+   guess). This default selection is only a subset of every port the
+   real block actually supports - the rest are documented in the
+   block's summary markdown but omitted from the JSON because most
+   projects don't need them.
+1b. PORT_SELECTION_MODE decides whether to stop at that default subset
+    or go further:
+      - "default": use the io_jsons ports exactly as-is (original
+        behaviour, no extra Grok calls).
+      - "intelligence": also read the block's summary markdown (which
+        documents the FULL port list, not just the default selection)
+        and ask Grok whether this project's connection rules call for
+        adding ports beyond the default set, or dropping default ports
+        that don't apply - producing an adjusted port list that then
+        feeds into every step below exactly like the default one would.
 2. Pair each block with its connection-rule summary: the file in
    summary_markdowns/ that has the SAME filename stem (e.g.
    io_jsons/C_GROUP_009.json <-> summary_markdowns/C_GROUP_009.md). Add a
@@ -13,18 +27,19 @@ Generalized, multi-block pipeline (no longer hardcoded to C_GROUP + C_DRV_1D):
    keeps the number of API calls close to the number of REAL
    relationships instead of blowing up as every-block-vs-every-block.
 4. For each relevant pair, ask Grok to infer connections using both
-   blocks' real ports + their rules, validate the result against the
-   real ports (drop anything hallucinated), and combine everything into
-   one connections list.
+   blocks' (possibly intelligence-adjusted) ports + their rules,
+   validate the result against those ports (drop anything hallucinated),
+   and combine everything into one connections list.
 5. Deterministically draw every block in a row (pins straight from the
-   JSON) and wire up every inferred connection, each with its own color,
-   then save block_diagram.png.
+   resolved port lists) and wire up every inferred connection, each with
+   its own color, then save block_diagram.png.
 
 Step 5 is plain, fixed matplotlib code (not LLM-generated) - an earlier
 attempt at having the model invent both the port layout AND the drawing
 code produced overlapping, unreadable output once blocks had more than a
 handful of pins. Grok's job is limited to the part it's actually good at:
-reading the rules and figuring out which ports connect.
+reading the rules and figuring out which ports connect (and, in
+"intelligence" mode, which ports should even be on the diagram).
 """
 
 import glob
@@ -52,6 +67,19 @@ IMAGE_PATH = "block_diagram.png"
 # past Groq's per-minute token cap. Bump this up if you add blocks with
 # much larger summaries and start seeing rate-limit retries.
 SECONDS_BETWEEN_CALLS = 20
+
+# Port selection mode - change this one flag to switch behaviour for
+# every discovered block:
+#   "default"      - use exactly the ports listed in each io_jsons/*.json
+#                    file. No extra Grok calls, identical to the
+#                    original behaviour.
+#   "intelligence" - additionally consult each block's summary markdown
+#                    (which documents every port the real block
+#                    supports, not just the default selection) and ask
+#                    Grok to add or remove ports so the default set
+#                    better matches what this project's own connection
+#                    rules call for.
+PORT_SELECTION_MODE = "intelligence" 
 
 client = OpenAI(
     api_key=os.environ["GROK_API_KEY"],
@@ -122,6 +150,153 @@ def discover_blocks() -> dict:
 
     print(f"Discovered {len(blocks)} block(s): {', '.join(blocks)}")
     return blocks
+
+
+# ---------------------------------------------------------------------
+# Port selection mode: "default" keeps the io_jsons ports untouched;
+# "intelligence" asks Grok to widen/narrow that default set using each
+# block's own summary markdown, which documents the full port list.
+# ---------------------------------------------------------------------
+
+def extract_section(markdown: str, header: str) -> str:
+    """Return the body text of one '## <header>' section of a summary
+    markdown file, up to the next '## ' heading (or end of file).
+    Empty string if that header isn't present."""
+    match = re.search(rf"##\s+{re.escape(header)}\s*\n(.*?)(?=\n##\s|\Z)", markdown, re.DOTALL)
+    return match.group(1) if match else ""
+
+
+def extract_backticked_names(text: str) -> set:
+    """Every `PortName`-style identifier mentioned in a chunk of summary
+    text - used as the "this name is actually documented somewhere, it's
+    not a hallucination" allow-list for intelligence mode."""
+    return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", text))
+
+
+def refine_ports_intelligently(block: dict, rules: str) -> dict:
+    """"intelligence" mode only: the io_jsons file is just Siemens'
+    DEFAULT port selection, not the full set the real block supports.
+    The summary markdown documents the full set. Ask Grok, using that
+    summary's own Purpose/Key Connection Notes as the specification of
+    what a real integration needs, whether any ports should be added on
+    top of the default set or removed from it. Returns a new block dict
+    with adjusted "inputs"/"outputs"; falls back to the default block
+    untouched if there is no summary to reason from."""
+    if not rules.strip():
+        return block
+
+    allowed_names = (
+        extract_backticked_names(extract_section(rules, "Inputs"))
+        | extract_backticked_names(extract_section(rules, "Outputs"))
+        | extract_backticked_names(extract_section(rules, "Group/Object Links"))
+    )
+
+    system_prompt = (
+        "You are a careful industrial automation engineering assistant. "
+        "Output only valid JSON."
+    )
+
+    user_prompt = f"""
+The JSON below is the DEFAULT selection of input/output ports for the
+Siemens CEMAT block {block['block_name']} - the generic subset most
+projects use. It is not the full list of ports this block actually
+supports; it is a starting point.
+
+The markdown after it is that block's connection-rule summary, which
+documents the FULL port list this block supports (see its own "Inputs"
+and "Outputs" sections) as well as its "Purpose" and "Key Connection
+Notes" - treat those two sections as the specification of what a real
+integration of this block actually needs.
+
+Your task: decide whether the DEFAULT port list should be adjusted for
+this project:
+- ADD a port that is documented in the summary's "Inputs"/"Outputs"/
+  "Group/Object Links" sections but missing from the default list, ONLY
+  if the "Purpose" or "Key Connection Notes" text gives a concrete
+  reason a real integration would need to wire it (e.g. it names that
+  port directly as part of how this block connects to others).
+- REMOVE a default port only if the summary text makes clear it is not
+  applicable to a normal/simple integration (this should be rare).
+- Otherwise, leave the port exactly as in the default list.
+
+STRICT RULES:
+- Every port name you output MUST literally appear as a `BacktickedName`
+  in the summary text below. Never invent, rename, or guess a name.
+- Do not add a port "just because it's documented" - only add it if the
+  Purpose/Key Connection Notes text gives a real, concrete reason.
+- When in doubt, prefer the default list unchanged - being conservative
+  here is better than guessing.
+- Keep every port's "datatype" and a short "description" (reuse the
+  summary's wording where possible).
+
+Output only valid JSON in exactly this shape (the full, final port
+lists - not just the changes):
+{{
+  "inputs": [{{"name": "...", "datatype": "...", "description": "..."}}],
+  "outputs": [{{"name": "...", "datatype": "...", "description": "..."}}]
+}}
+
+=== {block['block_name']} DEFAULT ports (JSON) ===
+{json.dumps({"inputs": block["inputs"], "outputs": block["outputs"]}, indent=2)}
+
+=== {block['block_name']} connection rules (full summary) ===
+{rules}
+""".strip()
+
+    result = call_model_json(system_prompt, user_prompt)
+
+    def sanitize(proposed: list, default_ports: list) -> list:
+        default_names = {p["name"] for p in default_ports}
+        kept = []
+        for p in proposed:
+            name = p.get("name")
+            if name in default_names or name in allowed_names:
+                kept.append({
+                    "name": name,
+                    "datatype": p.get("datatype", "?"),
+                    "description": p.get("description", ""),
+                })
+            else:
+                print(f"  Intelligence mode: dropping proposed port '{name}' for "
+                      f"{block['block_name']} - not documented anywhere in its summary.")
+        return kept
+
+    new_inputs = sanitize(result.get("inputs", block["inputs"]), block["inputs"])
+    new_outputs = sanitize(result.get("outputs", block["outputs"]), block["outputs"])
+
+    added_in = {p["name"] for p in new_inputs} - {p["name"] for p in block["inputs"]}
+    removed_in = {p["name"] for p in block["inputs"]} - {p["name"] for p in new_inputs}
+    added_out = {p["name"] for p in new_outputs} - {p["name"] for p in block["outputs"]}
+    removed_out = {p["name"] for p in block["outputs"]} - {p["name"] for p in new_outputs}
+    if added_in or removed_in or added_out or removed_out:
+        print(f"  Intelligence mode adjusted {block['block_name']}: "
+              f"+in{sorted(added_in)} -in{sorted(removed_in)} "
+              f"+out{sorted(added_out)} -out{sorted(removed_out)}")
+    else:
+        print(f"  Intelligence mode: default ports already sufficient for {block['block_name']}.")
+
+    adjusted = dict(block)
+    adjusted["inputs"] = new_inputs or block["inputs"]
+    adjusted["outputs"] = new_outputs or block["outputs"]
+    return adjusted
+
+
+def apply_port_selection_mode(blocks: dict) -> None:
+    """Mutates each discovered block's port list in place according to
+    PORT_SELECTION_MODE. No-op (and no extra Grok calls) in "default"
+    mode, which keeps the original, pre-existing behaviour."""
+    if PORT_SELECTION_MODE != "intelligence":
+        return
+
+    names = list(blocks)
+    for i, name in enumerate(names, start=1):
+        info = blocks[name]
+        if not info["rules"].strip():
+            continue
+        print(f"[{i}/{len(names)}] Intelligence mode: reviewing default ports for {name}...")
+        info["block"] = refine_ports_intelligently(info["block"], info["rules"])
+        if i < len(names):
+            time.sleep(SECONDS_BETWEEN_CALLS)
 
 
 # ---------------------------------------------------------------------
@@ -485,6 +660,7 @@ def draw_diagram(blocks_in_order: list, connections: list) -> None:
 
 def main() -> None:
     blocks = discover_blocks()
+    apply_port_selection_mode(blocks)
     pairs = candidate_pairs(blocks)
     print(f"Found {len(pairs)} candidate pair(s) whose rules reference each other: {pairs}")
 
