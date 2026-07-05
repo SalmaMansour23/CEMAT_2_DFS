@@ -1,4 +1,23 @@
 {
-  "connections": [],
+  "connections": [
+    {
+      "from_block": "C_MEAS_I",
+      "from_port": "RT_MIS",
+      "to_block": "C_ANASEL",
+      "to_port": "In01",
+      "reason": "C_MEAS_I output feeds C_ANASEL input for further processing",
+      "confidence": 0.9,
+      "inverted": false
+    },
+    {
+      "from_block": "C_MEAS_I",
+      "from_port": "RT_MIS",
+      "to_block": "C_ANASEL",
+      "to_port": "In01Stat",
+      "reason": "C_MEAS_I output feeds C_ANASEL input for signal status",
+      "confidence": 0.8,
+      "inverted": false
+    }
+  ],
   "uncertain_connections": []
 }

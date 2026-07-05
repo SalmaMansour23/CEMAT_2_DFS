@@ -1,0 +1,54 @@
+{
+  "block_name": "C_MEAS_I",
+  "block_type": "C_MEAS_I",
+  "description": "Integrates a measured value and forms an interface for cement plant applications, providing two integration values updated at different intervals.",
+  "inputs": [
+    {
+      "name": "MV_IN",
+      "datatype": "REAL",
+      "description": "Input for a physical measured value"
+    },
+    {
+      "name": "QC",
+      "datatype": "BYTE",
+      "description": "Transfer of the Quality Code from the upstream measured value FB"
+    },
+    {
+      "name": "SCB",
+      "datatype": "REAL",
+      "description": "Physical value (start of measuring range)"
+    },
+    {
+      "name": "SCE",
+      "datatype": "REAL",
+      "description": "Physical value (end of measuring range)"
+    },
+    {
+      "name": "REL_INT",
+      "datatype": "BOOL",
+      "description": "Releases the integrate function with a 1 signal"
+    },
+    {
+      "name": "PULS_VAL",
+      "datatype": "REAL",
+      "description": "Factor for the weighting of the integration time / dimensions conversion"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "RT_MIS",
+      "datatype": "DWORD",
+      "description": "Integration value updated every 5 seconds"
+    },
+    {
+      "name": "RT_MIH",
+      "datatype": "DWORD",
+      "description": "Integration value updated every hour"
+    },
+    {
+      "name": "MIH_OK",
+      "datatype": "BOOL",
+      "description": "Indicates if there were no invalid measured values during the past hour"
+    }
+  ]
+}

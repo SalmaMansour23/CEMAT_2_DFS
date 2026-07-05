@@ -50,6 +50,14 @@ code produced overlapping, unreadable output once blocks had more than a
 handful of pins. Grok's job is limited to the part it's actually good at:
 reading the rules and figuring out which ports connect (and, in
 "intelligence" mode, which ports should even be on the diagram).
+
+Optional: if a user_prompt.txt file exists next to this script, its text
+is read once and appended to every Grok prompt (port refinement AND
+connection inference) as extra, project-specific guidance - e.g. "this
+project always wires the quick-stop feedback" or any other context the
+manuals don't capture. It never overrides the hallucination-guard rules;
+it's purely extra context to help judgment calls. Leave it missing or
+empty to get the original behaviour.
 """
 
 import glob
@@ -73,6 +81,13 @@ IO_JSONS_DIR = "io_jsons"
 SUMMARY_MD_DIR = "summary_markdowns"
 CONNECTIONS_PATH = "grok_connections.json"
 IMAGE_PATH = "block_diagram.png"
+
+# Optional free-text file where the person running this pipeline can
+# describe their specific application/project in their own words - e.g.
+# which signals matter most, or context the manuals don't capture - to
+# help Grok make better judgment calls on port selection and connections.
+# Safe to leave missing or empty; everything works exactly as before.
+USER_PROMPT_PATH = "user_prompt.txt"
 
 # Pacing between Grok calls so many small pairwise requests don't blow
 # past Groq's per-minute token cap. Bump this up if you add blocks with
@@ -300,6 +315,34 @@ def normalize(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+def load_user_guidance() -> str:
+    """Read USER_PROMPT_PATH if it exists, so the person running this
+    pipeline can add their own free-text notes about this specific
+    application to help guide port selection and connection inference.
+    Returns "" if the file is missing or empty - callers just skip
+    injecting anything in that case, so this is fully optional."""
+    if not os.path.exists(USER_PROMPT_PATH):
+        return ""
+    with open(USER_PROMPT_PATH, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def user_guidance_block(user_guidance: str) -> str:
+    """Render the optional user-guidance section for a prompt. Empty
+    string (nothing added to the prompt) if there is no guidance."""
+    if not user_guidance:
+        return ""
+    return f"""
+
+USER-SUPPLIED GUIDANCE FOR THIS SPECIFIC APPLICATION (from the person
+running this pipeline - use it to help judgment calls, but it does NOT
+override the STRICT RULES above: still only use real, literal port names
+from the JSON lists, and only include what those lists actually support):
+\"\"\"
+{user_guidance}
+\"\"\""""
+
+
 def extract_section(markdown: str, header: str) -> str:
     """Return the body text of one '## <header>' section of a summary
     markdown file, up to the next '## ' heading (or end of file).
@@ -420,7 +463,15 @@ Output only valid JSON in exactly this shape:
         return kept
 
     block = {
-        "block_name": result.get("block_name") or fallback_name,
+        # Always use the name parsed straight out of the summary's own
+        # "# <Name> Summary" header rather than whatever Grok echoes back
+        # for "block_name" - the prompt below embeds the file stem (which
+        # includes the trailing "_009"-style version suffix) as a label,
+        # and Grok sometimes copies that suffix into its own answer,
+        # producing a block name like "C_MEAS_I_009" instead of the real
+        # logical name "C_MEAS_I". That mismatch breaks every later
+        # name-based lookup (candidate pairing, user-guidance matching).
+        "block_name": fallback_name,
         "block_type": result.get("block_type", "Unknown"),
         "description": result.get("description", ""),
         "inputs": sanitize(result.get("inputs", [])),
@@ -495,7 +546,7 @@ def discover_blocks() -> dict:
 # block's own summary markdown, which documents the full port list.
 # ---------------------------------------------------------------------
 
-def refine_ports_intelligently(block: dict, rules: str) -> dict:
+def refine_ports_intelligently(block: dict, rules: str, user_guidance: str = "") -> dict:
     """"intelligence" mode only: the io_jsons file is just Siemens'
     DEFAULT port selection, not the full set the real block supports.
     The summary markdown documents the full set. Ask Grok, using that
@@ -566,6 +617,7 @@ lists - not just the changes):
 
 === {block['block_name']} connection rules (full summary) ===
 {rules}
+{user_guidance_block(user_guidance)}
 """.strip()
 
     result = call_model_json(system_prompt, user_prompt)
@@ -606,7 +658,7 @@ lists - not just the changes):
     return adjusted
 
 
-def apply_port_selection_mode(blocks: dict) -> None:
+def apply_port_selection_mode(blocks: dict, user_guidance: str = "") -> None:
     """Mutates each discovered block's port list in place according to
     PORT_SELECTION_MODE. No-op (and no extra Grok calls) in "default"
     mode, which keeps the original, pre-existing behaviour."""
@@ -619,7 +671,7 @@ def apply_port_selection_mode(blocks: dict) -> None:
         if not info["rules"].strip():
             continue
         print(f"[{i}/{len(names)}] Intelligence mode: reviewing default ports for {name}...")
-        info["block"] = refine_ports_intelligently(info["block"], info["rules"])
+        info["block"] = refine_ports_intelligently(info["block"], info["rules"], user_guidance)
         if i < len(names):
             time.sleep(SECONDS_BETWEEN_CALLS)
 
@@ -629,10 +681,25 @@ def apply_port_selection_mode(blocks: dict) -> None:
 # mention each other, so N blocks doesn't mean N^2 API calls in practice
 # ---------------------------------------------------------------------
 
-def candidate_pairs(blocks: dict) -> list:
+def candidate_pairs(blocks: dict, user_guidance: str = "") -> list:
     names = list(blocks)
+    all_pairs = list(itertools.combinations(names, 2))
+
+    if user_guidance.strip():
+        # The user has given freeform guidance about how they want things
+        # connected. We can't reliably tell which specific block pair
+        # loose, possibly-imperfect text is about - they may abbreviate,
+        # paraphrase, or not name a block exactly as its file is named -
+        # so trying to pattern-match guidance text against block names
+        # would just recreate the same rigid-matching problem. Instead,
+        # when guidance is present, check every pair and let Grok itself
+        # weigh the guidance (it already sees the real port lists too,
+        # so it won't invent a connection between unrelated blocks just
+        # because guidance exists).
+        return all_pairs
+
     pairs = []
-    for a, b in itertools.combinations(names, 2):
+    for a, b in all_pairs:
         a_mentions_b = normalize(b) in normalize(blocks[a]["rules"])
         b_mentions_a = normalize(a) in normalize(blocks[b]["rules"])
         if a_mentions_b or b_mentions_a:
@@ -645,7 +712,7 @@ def candidate_pairs(blocks: dict) -> list:
 # now parameterized so it works for any pair of discovered blocks)
 # ---------------------------------------------------------------------
 
-def infer_connections_for_pair(block_a: dict, rules_a: str, block_b: dict, rules_b: str) -> dict:
+def infer_connections_for_pair(block_a: dict, rules_a: str, block_b: dict, rules_b: str, user_guidance: str = "") -> dict:
     name_a, name_b = block_a["block_name"], block_b["block_name"]
 
     system_prompt = (
@@ -668,9 +735,15 @@ STRICT RULES:
 - Every connection's "from_port" must be a port listed in from_block's
   "outputs", and "to_port" must be a port listed in to_block's "inputs".
 - Only include a connection in "connections" if the rule summaries
-  clearly support it. If you think a connection likely exists but the
-  text doesn't clearly support both ends, put it under
-  "uncertain_connections" instead, with a short note on what's missing.
+  and/or the user-supplied guidance (see the "USER-SUPPLIED GUIDANCE"
+  section near the end, if present) clearly support it. The user's own
+  guidance is a legitimate, standalone basis for including a connection
+  even if the official summaries don't spell it out - the user knows
+  their own application and may describe a real relationship the
+  summaries never document. If you think a connection likely exists but
+  neither the summaries nor the user guidance clearly support both ends,
+  put it under "uncertain_connections" instead, with a short note on
+  what's missing.
 - Do not invent a connection just to look complete.
 - Go through EVERY bullet point in the "Key Connection Notes" section of
   BOTH summaries one by one and check it against the port lists - do not
@@ -778,6 +851,7 @@ Output only valid JSON in exactly this shape:
 
 === {name_b} connection rules ===
 {rules_b or "(no summary found for this block)"}
+{user_guidance_block(user_guidance)}
 """.strip()
 
     return call_model_json(system_prompt, user_prompt)
@@ -1049,17 +1123,21 @@ def draw_diagram(blocks_in_order: list, connections: list) -> None:
 
 
 def main() -> None:
+    user_guidance = load_user_guidance()
+    if user_guidance:
+        print(f"Loaded user guidance from {USER_PROMPT_PATH} ({len(user_guidance)} chars).")
+
     ensure_all_summaries_exist()
     blocks = discover_blocks()
-    apply_port_selection_mode(blocks)
-    pairs = candidate_pairs(blocks)
+    apply_port_selection_mode(blocks, user_guidance)
+    pairs = candidate_pairs(blocks, user_guidance)
     print(f"Found {len(pairs)} candidate pair(s) whose rules reference each other: {pairs}")
 
     all_connections, all_uncertain = [], []
     for i, (name_a, name_b) in enumerate(pairs, start=1):
         info_a, info_b = blocks[name_a], blocks[name_b]
         print(f"[{i}/{len(pairs)}] Asking Grok to infer connections between {name_a} and {name_b}...")
-        result = infer_connections_for_pair(info_a["block"], info_a["rules"], info_b["block"], info_b["rules"])
+        result = infer_connections_for_pair(info_a["block"], info_a["rules"], info_b["block"], info_b["rules"], user_guidance)
         all_connections.extend(result.get("connections", []))
         all_uncertain.extend(result.get("uncertain_connections", []))
         if i < len(pairs):

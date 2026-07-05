@@ -1,0 +1,5 @@
+the C_MEAS_I block reads, scales, and evaluates the limit thresholds
+ of a raw analog sensor signal , while the C_ANASEL block acts as a 
+ digital routing switch that passes that same processed measurement (after MEAS block) 
+ and its corresponding signal quality status forward to downstream control 
+ or interlocking modules.
