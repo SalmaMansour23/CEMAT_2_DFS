@@ -676,18 +676,45 @@ STRICT RULES:
   stop after finding the first few obvious matches. Missing a documented
   rule is as bad as inventing a fake one.
 
-GROUP/ROUTE-LINK CONNECTIONS ARE MANDATORY, NOT UNCERTAIN:
-- A "*_LINK"-style output connecting to the other block's primary
-  "*_LINK1"/"*_LINK" input is how one block is attached to another in
-  CEMAT (e.g. a group's link output to a drive's primary link input).
-  For a simple, single-instance setup this is always wired, not
-  optional. If a summary says something like "the main group should be
-  connected to GR_LINK1" or "connect this output to the GR_LINK
-  interface", treat that as confident, documented support and put the
-  connection in "connections" with high confidence - do NOT push it into
-  "uncertain_connections" just because the manual also mentions other
-  configurations (multiple groups/routes, multiplexers) that don't apply
-  to this simple case.
+GROUP <-> COMPONENT LINK CONNECTION IS MANDATORY - NEVER SKIP, NEVER UNCERTAIN:
+- Whenever one of these two blocks is a supervisory "group" block and the
+  other is one of its member/component blocks (a drive, valve, damper,
+  route, annunciation, etc.), CEMAT ALWAYS physically wires the group to
+  that component through a dedicated link interface - the exact name
+  varies per block (G_LINK, GR_LINK1, GR_LINK2, O_LINK, O_LINKQ,
+  MUX_LINK, R_LINK, ...) so use whatever the port lists actually call it,
+  do not assume it must be named exactly "G_LINK"/"GR_LINK1".
+- Concretely: scan both port lists for any output whose name contains
+  "LINK" and any input whose name contains "LINK". If you find a
+  plausible pair (one block's "*LINK*" output and the other's "*LINK*"
+  input), you MUST output that connection in "connections" with
+  confidence >= 0.95, even if the summary's prose doesn't spell it out
+  in so many words - the port names themselves are the evidence. This is
+  true for a normal, single-instance setup even when the manual also
+  discusses other configurations (multiple groups/routes, multiplexers)
+  that don't apply here.
+- Do NOT push this into "uncertain_connections" and do NOT leave it out
+  entirely. A missing group/component link is one of the most serious
+  errors possible here, since it is what physically attaches the
+  component to its group - treat finding it as mandatory, not a bonus.
+
+GROUP <-> COMPONENT RUN/STOP FEEDBACK IS EXPECTED, NOT OPTIONAL:
+- A supervisory group almost always needs to know when its member
+  objects are actually running/stopped. If the group side has
+  feedback-style inputs for this (commonly named like FbObjOn/FbObjOff,
+  or described as "feedback that objects are running/stopped") AND the
+  component side has a running/stopped-style output (commonly named
+  like RunSig/OffSig, or similarly described), connect them:
+  - the component's "running" output -> the group's "on/running"
+    feedback input, direct ("inverted": false).
+  - the same output, negated, -> the group's "off/stopped" feedback
+    input ("inverted": true) - UNLESS the component separately exposes
+    its own explicit "stopped" output, in which case connect that
+    directly instead.
+  Only skip this pair if the relevant ports genuinely don't exist in
+  either block's port list - do not skip it just because the summary
+  text is thin on the subject; the existence of matching port names on
+  both sides is itself strong evidence this connection is real.
 
 WATCH FOR INVERTED / SPLIT SIGNALS:
 - Sometimes one output feeds two different input ports on the other
