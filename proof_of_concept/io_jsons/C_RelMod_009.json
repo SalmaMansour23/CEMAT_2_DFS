@@ -1,0 +1,24 @@
+{
+  "block_name": "C_RelMod_009",
+  "block_type": "C_RelMod",
+  "description": "The C_RelMod function block represents a collection of digital and analog objects that belong to a technological object, used in cement plant applications to organize and manage various objects.",
+  "inputs": [
+    {
+      "name": "SelFpD1",
+      "datatype": "ANY",
+      "description": "input value for object 1, used to set the JUMP variable with the object's AKZ"
+    },
+    {
+      "name": "SelFpD2",
+      "datatype": "ANY",
+      "description": "input value for object 2, used to set the JUMP variable with the object's AKZ"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "Out_Sig",
+      "datatype": "STRUCT",
+      "description": "output value, used as a connection point for the next object"
+    }
+  ]
+}
