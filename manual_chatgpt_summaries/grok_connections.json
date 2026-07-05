@@ -1,0 +1,59 @@
+{
+  "connections": [
+    {
+      "from_block": "C_GROUP",
+      "from_port": "G_LINK",
+      "to_block": "C_DRV_1D",
+      "to_port": "GR_LINK1",
+      "reason": "Group/object link interface",
+      "confidence": 1.0,
+      "inverted": false
+    },
+    {
+      "from_block": "C_DRV_1D",
+      "from_port": "RunSig",
+      "to_block": "C_GROUP",
+      "to_port": "FbObjOn",
+      "reason": "Running feedback for group",
+      "confidence": 1.0,
+      "inverted": false
+    },
+    {
+      "from_block": "C_DRV_1D",
+      "from_port": "RunSig",
+      "to_block": "C_GROUP",
+      "to_port": "FbObjOff",
+      "reason": "Stopped feedback for group (inverted)",
+      "confidence": 1.0,
+      "inverted": true
+    },
+    {
+      "from_block": "C_GROUP",
+      "from_port": "CmdOn",
+      "to_block": "C_DRV_1D",
+      "to_port": "StartAut",
+      "reason": "Automatic start command",
+      "confidence": 1.0,
+      "inverted": false
+    },
+    {
+      "from_block": "C_GROUP",
+      "from_port": "PeCmdOff",
+      "to_block": "C_DRV_1D",
+      "to_port": "StopAut",
+      "reason": "Automatic stop command",
+      "confidence": 1.0,
+      "inverted": false
+    },
+    {
+      "from_block": "C_GROUP",
+      "from_port": "QuicStpQ",
+      "to_block": "C_DRV_1D",
+      "to_port": "QuickStp",
+      "reason": "Quick-stop command",
+      "confidence": 1.0,
+      "inverted": false
+    }
+  ],
+  "uncertain_connections": []
+}

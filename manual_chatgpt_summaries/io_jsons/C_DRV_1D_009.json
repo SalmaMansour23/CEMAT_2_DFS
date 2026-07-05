@@ -1,0 +1,41 @@
+{
+  "block_name": "C_DRV_1D",
+  "block_type": "Unidirectional Drive",
+  "description": "Drive block for controlling and supervising one unidirectional motor/drive.",
+  "inputs": [
+    {"name": "FbkRun", "datatype": "BOOL", "description": "Contactor/run feedback from the motor starter or drive."},
+    {"name": "ElAvail", "datatype": "BOOL", "description": "Electrical availability input. FALSE blocks start and trips the drive."},
+    {"name": "Overload", "datatype": "BOOL", "description": "Thermal or mechanical overload healthy signal."},
+    {"name": "AutModLo", "datatype": "BOOL", "description": "Local/automatic or repair switch signal depending on configuration."},
+    {"name": "StopLoc", "datatype": "BOOL", "description": "Local stop signal from field switch or pushbutton."},
+    {"name": "StartLoc", "datatype": "BOOL", "description": "Local start signal from field switch or pushbutton."},
+    {"name": "IntStaE", "datatype": "STRUCT", "description": "Essential start interlock."},
+    {"name": "IntStart", "datatype": "STRUCT", "description": "Start interlock."},
+    {"name": "IntOpE", "datatype": "STRUCT", "description": "Essential operating interlock."},
+    {"name": "IntOper", "datatype": "STRUCT", "description": "Operating interlock."},
+    {"name": "IntProtG", "datatype": "STRUCT", "description": "General protection interlock active in all modes."},
+    {"name": "IntProtA", "datatype": "STRUCT", "description": "Protection interlock active in automatic and selected manual modes."},
+    {"name": "IntStop", "datatype": "STRUCT", "description": "Stop interlock for sequential stopping."},
+    {"name": "ProFB", "datatype": "STRUCT", "description": "Process feedback from a process feedback block, such as speed monitor."},
+    {"name": "MsgEn", "datatype": "BOOL", "description": "Message enable input."},
+    {"name": "StartAut", "datatype": "BOOL", "description": "Automatic start command input."},
+    {"name": "StopAut", "datatype": "BOOL", "description": "Automatic stop command input."},
+    {"name": "QuickStp", "datatype": "BOOL", "description": "Quick-stop command input."},
+    {"name": "SimoStat", "datatype": "STRUCT", "description": "Status from SIMOCODE adapter block."},
+    {"name": "AV_Perc", "datatype": "STRUCT", "description": "Analog percentage value, typically motor current or power."},
+    {"name": "StaDelTi", "datatype": "INT", "description": "Start delay time."},
+    {"name": "StpDelTi", "datatype": "INT", "description": "Stop delay time."},
+    {"name": "GR_LINK1", "datatype": "STRUCT", "description": "Primary group or route link input."},
+    {"name": "GR_LINK2", "datatype": "STRUCT", "description": "Secondary group or route link input."},
+    {"name": "MUX_LINK", "datatype": "STRUCT", "description": "Link from C_MUX when drive belongs to more than two groups/routes."}
+  ],
+  "outputs": [
+    {"name": "RunSig", "datatype": "STRUCT", "description": "Drive running signal used as feedback and as interlock for other objects."},
+    {"name": "DynFlt", "datatype": "BOOL", "description": "Dynamic fault indication, not yet acknowledged."},
+    {"name": "Fault", "datatype": "BOOL", "description": "General fault indication."},
+    {"name": "WarnAct", "datatype": "BOOL", "description": "Startup warning output for horn/lamp."},
+    {"name": "ContOn", "datatype": "BOOL", "description": "Contactor ON command output to motor starter or subcontrol block."},
+    {"name": "O_LINKQ", "datatype": "STRUCT", "description": "Object link output for slave objects such as annunciations, measurements, and process feedback blocks."},
+    {"name": "ErrorNum", "datatype": "INT", "description": "Engineering/configuration error number."}
+  ]
+}
