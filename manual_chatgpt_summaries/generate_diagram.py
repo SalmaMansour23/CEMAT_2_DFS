@@ -8,6 +8,11 @@ Generalized, multi-block pipeline (no longer hardcoded to C_GROUP + C_DRV_1D):
    real block actually supports - the rest are documented in the
    block's summary markdown but omitted from the JSON because most
    projects don't need them.
+1a. If a summary_markdowns/*.md file has no matching io_jsons/*.json at
+    all, one is bootstrapped automatically: Grok reads that summary and
+    synthesizes a standard default ports JSON for it (grounded so it can
+    only use ports the summary documents), saved to io_jsons/ so it
+    behaves like any other pre-existing default file from then on.
 1b. PORT_SELECTION_MODE decides whether to stop at that default subset
     or go further:
       - "default": use the io_jsons ports exactly as-is (original
@@ -79,7 +84,7 @@ SECONDS_BETWEEN_CALLS = 20
 #                    Grok to add or remove ports so the default set
 #                    better matches what this project's own connection
 #                    rules call for.
-PORT_SELECTION_MODE = "intelligence" 
+PORT_SELECTION_MODE = "default" 
 
 client = OpenAI(
     api_key=os.environ["GROK_API_KEY"],
@@ -87,8 +92,29 @@ client = OpenAI(
 )
 
 
+# Beyond this many seconds, a rate-limit error is treated as a big quota
+# (e.g. Groq's daily "tokens per day" cap) rather than the usual
+# per-minute one - blindly sleeping through a 20+ minute wait would just
+# hang the script, so we fail fast with a clear message instead.
+RATE_LIMIT_MAX_AUTO_WAIT = 120
+
+
+def _parse_retry_seconds(message: str):
+    """Pull the "Please try again in Xm Ys" / "in Xs" suggestion out of a
+    Groq rate-limit error message, so we wait exactly as long as Groq
+    says instead of guessing with a fixed backoff."""
+    match = re.search(r"try again in (?:(\d+)m)?(\d+(?:\.\d+)?)s", message)
+    if not match:
+        return None
+    minutes = float(match.group(1)) if match.group(1) else 0.0
+    return minutes * 60 + float(match.group(2))
+
+
 def call_model_json(system_prompt: str, user_prompt: str) -> dict:
-    """Call Groq once and return the parsed JSON response, retrying on rate limits."""
+    """Call Groq once and return the parsed JSON response, retrying on
+    rate limits that clear quickly (e.g. per-minute token caps). Rate
+    limits that need a long wait (e.g. a daily token cap) fail fast with
+    a clear message instead of blocking the script for tens of minutes."""
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
@@ -101,9 +127,18 @@ def call_model_json(system_prompt: str, user_prompt: str) -> dict:
                 response_format={"type": "json_object"},
             )
             return json.loads(response.choices[0].message.content)
-        except RateLimitError:
-            wait = 30 * (attempt + 1)
-            print(f"  Rate limited, waiting {wait}s and retrying...")
+        except RateLimitError as e:
+            suggested_wait = _parse_retry_seconds(str(e))
+            if suggested_wait is not None and suggested_wait > RATE_LIMIT_MAX_AUTO_WAIT:
+                raise RuntimeError(
+                    f"Groq's rate limit says to wait {suggested_wait / 60:.1f} minute(s) "
+                    "before retrying - that's a large/daily quota limit, not a quick "
+                    "per-minute one, so this run is stopping instead of blocking. Wait "
+                    "for that reset and rerun the script, process fewer blocks per day, "
+                    "or upgrade the Groq tier."
+                ) from e
+            wait = (suggested_wait + 2) if suggested_wait is not None else 30 * (attempt + 1)
+            print(f"  Rate limited, waiting {wait:.0f}s and retrying (attempt {attempt + 1}/3)...")
             time.sleep(wait)
     raise RuntimeError("Gave up after repeated rate limit errors.")
 
@@ -116,13 +151,152 @@ def normalize(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+def extract_section(markdown: str, header: str) -> str:
+    """Return the body text of one '## <header>' section of a summary
+    markdown file, up to the next '## ' heading (or end of file).
+    Empty string if that header isn't present."""
+    match = re.search(rf"##\s+{re.escape(header)}\s*\n(.*?)(?=\n##\s|\Z)", markdown, re.DOTALL)
+    return match.group(1) if match else ""
+
+
+def extract_backticked_names(text: str) -> set:
+    """Every `PortName`-style identifier mentioned in a chunk of summary
+    text - used as the "this name is actually documented somewhere, it's
+    not a hallucination" allow-list for both intelligence mode and the
+    bootstrap-a-missing-json step below."""
+    return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", text))
+
+
+def bootstrap_default_json(md_path: str) -> dict:
+    """A summary markdown was found with no matching io_jsons/*.json file
+    at all - there is no default port selection for this block yet. Ask
+    Grok to read the summary and synthesize one: the small, standard
+    subset of ports a normal/simple integration would wire up (the same
+    kind of curated default the other io_jsons files hold), grounded so
+    it can only use ports the summary actually documents. The result is
+    saved to io_jsons/ so every later run treats it like any other
+    pre-existing default file (this only runs once per new block)."""
+    stem = os.path.splitext(os.path.basename(md_path))[0]
+    json_path = os.path.join(IO_JSONS_DIR, stem + ".json")
+
+    with open(md_path, "r", encoding="utf-8") as f:
+        rules = f.read()
+
+    print(f"No io_jsons file found for summary '{stem}' - asking Grok to bootstrap a default "
+          f"ports JSON for it from the summary (one-time; will be saved to {json_path}).")
+
+    name_match = re.search(r"#\s+(\S+)\s+Summary", rules)
+    fallback_name = name_match.group(1) if name_match else stem
+
+    # Ground against every backticked name in the WHOLE document, not just
+    # specific "## Inputs"/"## Outputs" sections - different summary files
+    # (hand-written by different ChatGPT sessions) don't always use the
+    # exact same section headings, and if none of them match, section-only
+    # extraction returns an empty allow-list and silently drops every
+    # single proposed port. Matching against the full text is more robust
+    # and still blocks outright invented names.
+    allowed_names = extract_backticked_names(rules)
+
+    system_prompt = (
+        "You are a careful industrial automation engineering assistant. "
+        "Output only valid JSON."
+    )
+
+    user_prompt = f"""
+There is no curated default input/output ports JSON for this Siemens
+CEMAT block yet - only its connection-rule summary markdown exists,
+shown in full below. That summary typically documents 40-50+ ports
+total (every port the real block supports), but a normal default
+selection is NOT that whole list - it is a short, logical, general-
+purpose subset, typically only around 8-15 inputs and 8-15 outputs,
+covering the ports a simple, everyday integration would actually wire
+up. Read the summary and produce ONLY that short default subset.
+
+Guidance for picking the default subset:
+- Include the ports the "Purpose" and "Key Connection Notes" sections
+  describe as core to starting, stopping, interlocking, and reporting
+  run/fault/warning status for this block, plus any group/object link
+  ports needed to attach it to other blocks.
+- Exclude ports the summary itself calls out as internal-only, test-only,
+  OS/diagnostic/visualization-only, or "not intended for application use"
+  (see its "Uncertain / Ambiguous Points" section if present).
+- Exclude rarely-used configuration/feature/status bit fields, OS/HMI
+  interfaces, and low-level status/diagnostic buffers unless the Key
+  Connection Notes describe them as part of normal wiring.
+- Do NOT just copy every port from the summary's "Inputs"/"Outputs"
+  sections into your answer - that defeats the purpose. Be selective:
+  pick the handful that a normal engineer would actually connect.
+
+STRICT RULES:
+- Every port name you output MUST literally appear (the summary wraps
+  port names in backticks like `ExamplePort`, but the JSON "name" value
+  you output must be the bare name with NO backticks around it, e.g.
+  "ExamplePort" not "`ExamplePort`") somewhere in the summary text below.
+  Never invent, rename, or guess a name.
+- Output a real "block_type" and one-sentence "description" based on the
+  summary's "Purpose" section.
+
+Output only valid JSON in exactly this shape:
+{{
+  "block_name": "...",
+  "block_type": "...",
+  "description": "...",
+  "inputs": [{{"name": "...", "datatype": "...", "description": "..."}}],
+  "outputs": [{{"name": "...", "datatype": "...", "description": "..."}}]
+}}
+
+=== Summary markdown ({stem}) ===
+{rules}
+""".strip()
+
+    result = call_model_json(system_prompt, user_prompt)
+
+    def sanitize(ports: list) -> list:
+        kept = []
+        for p in ports:
+            # Strip stray backticks/whitespace the model sometimes copies
+            # in from the summary's `Markdown` styling - without this, a
+            # single formatting slip makes every name fail the allow-list
+            # check and silently empties the whole port list.
+            name = (p.get("name") or "").strip().strip("`").strip()
+            if name in allowed_names:
+                kept.append({
+                    "name": name,
+                    "datatype": p.get("datatype", "?"),
+                    "description": p.get("description", ""),
+                })
+            else:
+                print(f"  Dropping bootstrapped port '{name}' for {stem} - not documented "
+                      f"anywhere in its summary.")
+        return kept
+
+    block = {
+        "block_name": result.get("block_name") or fallback_name,
+        "block_type": result.get("block_type", "Unknown"),
+        "description": result.get("description", ""),
+        "inputs": sanitize(result.get("inputs", [])),
+        "outputs": sanitize(result.get("outputs", [])),
+    }
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(block, f, indent=2, ensure_ascii=False)
+    print(f"  Saved bootstrapped default ports JSON to {json_path}")
+
+    return block
+
+
 def discover_blocks() -> dict:
     """Load every *.json in io_jsons/, and pair each with the summary .md
     in summary_markdowns/ that best matches its filename: prefer an exact
     same-stem match (C_GROUP_009.json <-> C_GROUP_009.md); fall back to
-    the block's "block_name" field appearing in the summary's filename."""
+    the block's "block_name" field appearing in the summary's filename.
+
+    Any summary .md left over with no matching json at all gets a
+    default ports JSON bootstrapped for it (see bootstrap_default_json)
+    so it can be discovered and connected just like every other block."""
     md_paths = glob.glob(os.path.join(SUMMARY_MD_DIR, "*.md"))
     blocks = {}
+    claimed_md_paths = set()
 
     for json_path in sorted(glob.glob(os.path.join(IO_JSONS_DIR, "*.json"))):
         with open(json_path, "r", encoding="utf-8") as f:
@@ -136,6 +310,7 @@ def discover_blocks() -> dict:
 
         rules = ""
         if match:
+            claimed_md_paths.add(match)
             with open(match, "r", encoding="utf-8") as f:
                 rules = f.read()
         else:
@@ -148,6 +323,19 @@ def discover_blocks() -> dict:
 
         blocks[name] = {"block": block, "rules": rules, "json_path": json_path, "summary_path": match}
 
+    for md_path in sorted(md_paths):
+        if md_path in claimed_md_paths:
+            continue
+        block = bootstrap_default_json(md_path)
+        name = block["block_name"]
+        if name in blocks:
+            print(f"Warning: bootstrapped block_name '{name}' (from {md_path}) already discovered - skipping.")
+            continue
+        json_path = os.path.join(IO_JSONS_DIR, os.path.splitext(os.path.basename(md_path))[0] + ".json")
+        with open(md_path, "r", encoding="utf-8") as f:
+            rules = f.read()
+        blocks[name] = {"block": block, "rules": rules, "json_path": json_path, "summary_path": md_path}
+
     print(f"Discovered {len(blocks)} block(s): {', '.join(blocks)}")
     return blocks
 
@@ -157,21 +345,6 @@ def discover_blocks() -> dict:
 # "intelligence" asks Grok to widen/narrow that default set using each
 # block's own summary markdown, which documents the full port list.
 # ---------------------------------------------------------------------
-
-def extract_section(markdown: str, header: str) -> str:
-    """Return the body text of one '## <header>' section of a summary
-    markdown file, up to the next '## ' heading (or end of file).
-    Empty string if that header isn't present."""
-    match = re.search(rf"##\s+{re.escape(header)}\s*\n(.*?)(?=\n##\s|\Z)", markdown, re.DOTALL)
-    return match.group(1) if match else ""
-
-
-def extract_backticked_names(text: str) -> set:
-    """Every `PortName`-style identifier mentioned in a chunk of summary
-    text - used as the "this name is actually documented somewhere, it's
-    not a hallucination" allow-list for intelligence mode."""
-    return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", text))
-
 
 def refine_ports_intelligently(block: dict, rules: str) -> dict:
     """"intelligence" mode only: the io_jsons file is just Siemens'
@@ -220,8 +393,11 @@ this project:
 - Otherwise, leave the port exactly as in the default list.
 
 STRICT RULES:
-- Every port name you output MUST literally appear as a `BacktickedName`
-  in the summary text below. Never invent, rename, or guess a name.
+- Every port name you output MUST literally appear (the summary wraps
+  port names in backticks like `ExamplePort`, but the JSON "name" value
+  you output must be the bare name with NO backticks around it, e.g.
+  "ExamplePort" not "`ExamplePort`") in the summary text below. Never
+  invent, rename, or guess a name.
 - Do not add a port "just because it's documented" - only add it if the
   Purpose/Key Connection Notes text gives a real, concrete reason.
 - When in doubt, prefer the default list unchanged - being conservative
@@ -249,7 +425,7 @@ lists - not just the changes):
         default_names = {p["name"] for p in default_ports}
         kept = []
         for p in proposed:
-            name = p.get("name")
+            name = (p.get("name") or "").strip().strip("`").strip()
             if name in default_names or name in allowed_names:
                 kept.append({
                     "name": name,

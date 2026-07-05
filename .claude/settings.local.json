@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"/d/Salma/ASECAutomation Internship Summer 2026/diagram_to_text/manual_chatgpt_summaries\" && rm io_jsons/C_DRV_1D_009.json && echo removed)"
+    ]
+  }
+}
