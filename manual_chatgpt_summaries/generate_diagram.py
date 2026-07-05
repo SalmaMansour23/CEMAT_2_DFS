@@ -806,6 +806,52 @@ def layout_all_blocks(blocks_in_order: list) -> dict:
     return layouts
 
 
+def topological_order(blocks_in_order: list, connections: list) -> list:
+    """Order blocks left-to-right by actual data flow (Kahn's algorithm):
+    if one block's output feeds another's input, the source ends up to
+    the left of the destination, instead of whatever order the blocks
+    happened to be discovered in. Falls back gracefully when the
+    connection graph has a cycle - e.g. a component that both takes
+    commands from and sends feedback back to another block, which is
+    common and expected - by breaking the tie on whichever remaining
+    block has the fewest unresolved incoming edges, rather than giving
+    up on ordering the rest of the diagram. Ties are otherwise broken by
+    original discovery order, so the layout stays stable across runs."""
+    names = [b["block_name"] for b in blocks_in_order]
+    original_index = {name: i for i, name in enumerate(names)}
+
+    out_edges = {name: set() for name in names}
+    in_degree = {name: 0 for name in names}
+    for c in connections:
+        a, b = c.get("from_block"), c.get("to_block")
+        if a not in out_edges or b not in out_edges or a == b or b in out_edges[a]:
+            continue
+        out_edges[a].add(b)
+        in_degree[b] += 1
+
+    remaining = set(names)
+    ordered_names = []
+    while remaining:
+        ready = sorted(
+            (n for n in remaining if in_degree[n] == 0),
+            key=lambda n: original_index[n],
+        )
+        if not ready:
+            # A cycle is blocking further progress - break it by picking
+            # the remaining block with the fewest unresolved incoming
+            # edges instead of stalling.
+            ready = [min(remaining, key=lambda n: (in_degree[n], original_index[n]))]
+        for n in ready:
+            ordered_names.append(n)
+            remaining.discard(n)
+            for m in out_edges[n]:
+                if m in remaining:
+                    in_degree[m] -= 1
+
+    name_to_block = {b["block_name"]: b for b in blocks_in_order}
+    return [name_to_block[n] for n in ordered_names]
+
+
 def layout_hub_and_spokes(group_block: dict, component_blocks: list) -> dict:
     """Group module on the left; every one of its components stacked
     vertically, one after another, in a single column on the right -
@@ -942,7 +988,10 @@ def draw_diagram(blocks_in_order: list, connections: list) -> None:
         ordered_for_numbering = [group_block] + component_blocks
     else:
         # Fallback: no single group detected (zero, or more than one) -
-        # lay every block out left-to-right in a row instead.
+        # order blocks left-to-right by actual data flow (whichever block
+        # feeds another's input goes to the left of it) instead of
+        # whatever order they happened to be discovered in.
+        blocks_in_order = topological_order(blocks_in_order, connections)
         layouts = layout_all_blocks(blocks_in_order)
         order = [b["block_name"] for b in blocks_in_order]
         index_of = {name: i for i, name in enumerate(order)}
