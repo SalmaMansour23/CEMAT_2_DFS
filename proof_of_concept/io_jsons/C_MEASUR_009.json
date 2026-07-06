@@ -1,0 +1,209 @@
+{
+  "block_name": "C_MEASUR",
+  "block_type": "Measured Value",
+  "description": "Analog measurement block for acquiring, scaling, monitoring, and distributing process values such as pressure, temperature, flow, level, or motor current.",
+  "inputs": [
+    {
+      "name": "TYP",
+      "datatype": "INT",
+      "description": "Selects the measurement source (REAL input, structured input, or direct analog card)."
+    },
+    {
+      "name": "MV_PHYS",
+      "datatype": "REAL",
+      "description": "Physical analog value, typically from a PCS7 driver block."
+    },
+    {
+      "name": "QUALITY",
+      "datatype": "BYTE",
+      "description": "Quality code associated with MV_PHYS."
+    },
+    {
+      "name": "PV",
+      "datatype": "STRUCT",
+      "description": "Structured process value (value and status), typically from a PCS7 analog input block."
+    },
+    {
+      "name": "MV_CARD",
+      "datatype": "WORD",
+      "description": "Raw analog value read directly from an S7 analog input card."
+    },
+    {
+      "name": "RA_HH",
+      "datatype": "BOOL",
+      "description": "Enable upper-high alarm."
+    },
+    {
+      "name": "RA_H",
+      "datatype": "BOOL",
+      "description": "Enable upper alarm."
+    },
+    {
+      "name": "RA_L",
+      "datatype": "BOOL",
+      "description": "Enable lower alarm."
+    },
+    {
+      "name": "RA_LL",
+      "datatype": "BOOL",
+      "description": "Enable lower-low alarm."
+    },
+    {
+      "name": "RA_LZ",
+      "datatype": "BOOL",
+      "description": "Enable Live Zero (Bad Quality) alarm."
+    },
+    {
+      "name": "UAMV",
+      "datatype": "BOOL",
+      "description": "Alarm interlock, commonly enabled only while equipment is running."
+    },
+    {
+      "name": "UMFR",
+      "datatype": "BOOL",
+      "description": "Message enable input used to suppress alarms during power failures."
+    },
+    {
+      "name": "RELS",
+      "datatype": "BOOL",
+      "description": "Enables measurement supervision."
+    },
+    {
+      "name": "UGWB",
+      "datatype": "BOOL",
+      "description": "Enables limit value calculation."
+    },
+    {
+      "name": "UGWA",
+      "datatype": "BOOL",
+      "description": "Blocks the measurement channel or activates service/bypass mode."
+    },
+    {
+      "name": "UQIT",
+      "datatype": "BOOL",
+      "description": "External acknowledgement input."
+    },
+    {
+      "name": "VAL_HH",
+      "datatype": "REAL",
+      "description": "Upper-high alarm limit."
+    },
+    {
+      "name": "VAL_H",
+      "datatype": "REAL",
+      "description": "Upper alarm limit."
+    },
+    {
+      "name": "VAL_L",
+      "datatype": "REAL",
+      "description": "Lower alarm limit."
+    },
+    {
+      "name": "VAL_LL",
+      "datatype": "REAL",
+      "description": "Lower-low alarm limit."
+    },
+    {
+      "name": "SCB",
+      "datatype": "REAL",
+      "description": "Engineering scale beginning."
+    },
+    {
+      "name": "SCE",
+      "datatype": "REAL",
+      "description": "Engineering scale end."
+    },
+    {
+      "name": "GR_LINK1",
+      "datatype": "STRUCT",
+      "description": "Primary group or route link."
+    },
+    {
+      "name": "GR_LINK2",
+      "datatype": "STRUCT",
+      "description": "Secondary group or route link."
+    },
+    {
+      "name": "MUX_LINK",
+      "datatype": "STRUCT",
+      "description": "Link from C_MUX when connected to more than two groups/routes."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "MV",
+      "datatype": "REAL",
+      "description": "Processed measured value."
+    },
+    {
+      "name": "QC",
+      "datatype": "BYTE",
+      "description": "Measurement quality code."
+    },
+    {
+      "name": "PV_Out",
+      "datatype": "STRUCT",
+      "description": "Structured process value output for connection to drives or C_ANA_SEL."
+    },
+    {
+      "name": "PV_Stat",
+      "datatype": "STRUCT",
+      "description": "Unit and status associated with PV_Out."
+    },
+    {
+      "name": "MV_PERC",
+      "datatype": "INT",
+      "description": "Measured value expressed as a percentage, typically used for motor current display."
+    },
+    {
+      "name": "HH",
+      "datatype": "BOOL",
+      "description": "Upper-high limit exceeded."
+    },
+    {
+      "name": "H",
+      "datatype": "BOOL",
+      "description": "Upper limit exceeded."
+    },
+    {
+      "name": "L",
+      "datatype": "BOOL",
+      "description": "Lower limit exceeded."
+    },
+    {
+      "name": "LL",
+      "datatype": "BOOL",
+      "description": "Lower-low limit exceeded."
+    },
+    {
+      "name": "ULZ",
+      "datatype": "BOOL",
+      "description": "Live Zero or Bad Quality indication."
+    },
+    {
+      "name": "UGN",
+      "datatype": "BOOL",
+      "description": "Negative gradient exceeded."
+    },
+    {
+      "name": "UGP",
+      "datatype": "BOOL",
+      "description": "Positive gradient exceeded."
+    },
+    {
+      "name": "USP",
+      "datatype": "BOOL",
+      "description": "Measurement channel blocked or bypassed."
+    },
+    {
+      "name": "SUBS_ON",
+      "datatype": "BOOL",
+      "description": "Substitution value mode active."
+    },
+    {
+      "name": "SIM_ON",
+      "datatype": "BOOL",
+      "description": "Simulation mode active."
+    }
+  ]
+}

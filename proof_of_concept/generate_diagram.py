@@ -68,7 +68,7 @@ import re
 import time
 
 from dotenv import load_dotenv
-from openai import OpenAI, RateLimitError
+from openai import OpenAI, RateLimitError, APIStatusError
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
@@ -166,6 +166,17 @@ def _call_model(system_prompt: str, user_prompt: str, json_mode: bool):
             wait = (suggested_wait + 2) if suggested_wait is not None else 30 * (attempt + 1)
             print(f"  Rate limited, waiting {wait:.0f}s and retrying (attempt {attempt + 1}/3)...")
             time.sleep(wait)
+        except APIStatusError as e:
+            if e.status_code == 413:
+                raise RuntimeError(
+                    "Groq rejected this request as too large for its per-minute token "
+                    "limit (a single prompt used more tokens than the whole per-minute "
+                    "cap allows) - retrying won't help since the request itself needs to "
+                    "be smaller. This usually means one of the blocks involved has an "
+                    "unusually large summary/port list; consider trimming its manual, or "
+                    "upgrading the Groq tier for a higher per-request limit."
+                ) from e
+            raise
     raise RuntimeError("Gave up after repeated rate limit errors.")
 
 
@@ -351,6 +362,27 @@ def extract_section(markdown: str, header: str) -> str:
     return match.group(1) if match else ""
 
 
+def connection_rules_excerpt(rules: str) -> str:
+    """Trim a full connection-rule summary down to just the sections that
+    actually help infer connections between two blocks (Purpose,
+    Group/Object Links, Key Connection Notes) - dropping its "Inputs"/
+    "Outputs" sections and "Uncertain / Ambiguous Points". The Inputs/
+    Outputs prose just restates the same port names/types/descriptions
+    already sent verbatim in the JSON port lists alongside this text, so
+    for a block with a large port list (40-90+ ports, now that bootstrap
+    keeps the full list instead of a curated subset) repeating all of it
+    a second time as prose can by itself be enough to blow past Groq's
+    per-request token cap. Falls back to the full text untouched if none
+    of those headers are present, since some hand-written summaries use
+    different section names."""
+    if not rules:
+        return rules
+    keep_headers = ["Purpose", "Group/Object Links", "Key Connection Notes"]
+    sections = [(h, extract_section(rules, h)) for h in keep_headers]
+    excerpt = "\n\n".join(f"## {h}\n{body.strip()}" for h, body in sections if body.strip())
+    return excerpt or rules
+
+
 def extract_backticked_names(text: str) -> set:
     """Every `PortName`-style identifier mentioned in a chunk of summary
     text - used as the "this name is actually documented somewhere, it's
@@ -361,11 +393,10 @@ def extract_backticked_names(text: str) -> set:
 
 def bootstrap_default_json(md_path: str) -> dict:
     """A summary markdown was found with no matching io_jsons/*.json file
-    at all - there is no default port selection for this block yet. Ask
-    Grok to read the summary and synthesize one: the small, standard
-    subset of ports a normal/simple integration would wire up (the same
-    kind of curated default the other io_jsons files hold), grounded so
-    it can only use ports the summary actually documents. The result is
+    at all - there is no ports JSON for this block yet. Ask Grok to read
+    the summary and extract the FULL, literal port list it documents
+    (not a curated subset - see the note below on why), grounded so it
+    can only use ports the summary actually documents. The result is
     saved to io_jsons/ so every later run treats it like any other
     pre-existing default file (this only runs once per new block)."""
     stem = os.path.splitext(os.path.basename(md_path))[0]
@@ -395,29 +426,19 @@ def bootstrap_default_json(md_path: str) -> dict:
     )
 
     user_prompt = f"""
-There is no curated default input/output ports JSON for this Siemens
-CEMAT block yet - only its connection-rule summary markdown exists,
-shown in full below. That summary typically documents 40-50+ ports
-total (every port the real block supports), but a normal default
-selection is NOT that whole list - it is a short, logical, general-
-purpose subset, typically only around 8-15 inputs and 8-15 outputs,
-covering the ports a simple, everyday integration would actually wire
-up. Read the summary and produce ONLY that short default subset.
-
-Guidance for picking the default subset:
-- Include the ports the "Purpose" and "Key Connection Notes" sections
-  describe as core to starting, stopping, interlocking, and reporting
-  run/fault/warning status for this block, plus any group/object link
-  ports needed to attach it to other blocks.
-- Exclude ports the summary itself calls out as internal-only, test-only,
-  OS/diagnostic/visualization-only, or "not intended for application use"
-  (see its "Uncertain / Ambiguous Points" section if present).
-- Exclude rarely-used configuration/feature/status bit fields, OS/HMI
-  interfaces, and low-level status/diagnostic buffers unless the Key
-  Connection Notes describe them as part of normal wiring.
-- Do NOT just copy every port from the summary's "Inputs"/"Outputs"
-  sections into your answer - that defeats the purpose. Be selective:
-  pick the handful that a normal engineer would actually connect.
+There is no ports JSON for this Siemens CEMAT block yet - only its
+connection-rule summary markdown exists, shown in full below. Extract
+EVERY port documented in the summary into a complete, literal port
+list - every bullet in its "Inputs" and "Outputs" sections, plus any
+port mentioned in a "Group/Object Links" section that isn't already
+listed there. Do NOT curate, filter, or leave any of them out, even
+ones that look like internal/OS/diagnostic-only ports - this JSON is
+later used to check whether a proposed connection's port name is real,
+so leaving a real, documented port out of this list would make a
+genuine, correctly-documented connection get wrongly rejected later
+just because it never made it into this file. Skip a port only if the
+summary's own "Uncertain / Ambiguous Points" section says its exact
+name is unclear or unconfirmed.
 
 STRICT RULES:
 - Every port name you output MUST literally appear (the summary wraps
@@ -714,6 +735,8 @@ def candidate_pairs(blocks: dict, user_guidance: str = "") -> list:
 
 def infer_connections_for_pair(block_a: dict, rules_a: str, block_b: dict, rules_b: str, user_guidance: str = "") -> dict:
     name_a, name_b = block_a["block_name"], block_b["block_name"]
+    rules_a = connection_rules_excerpt(rules_a)
+    rules_b = connection_rules_excerpt(rules_b)
 
     system_prompt = (
         "You are a careful industrial automation engineering assistant. "
@@ -751,22 +774,35 @@ STRICT RULES:
   rule is as bad as inventing a fake one.
 
 GROUP <-> COMPONENT LINK CONNECTION IS MANDATORY - NEVER SKIP, NEVER UNCERTAIN:
-- Whenever one of these two blocks is a supervisory "group" block and the
-  other is one of its member/component blocks (a drive, valve, damper,
-  route, annunciation, etc.), CEMAT ALWAYS physically wires the group to
-  that component through a dedicated link interface - the exact name
-  varies per block (G_LINK, GR_LINK1, GR_LINK2, O_LINK, O_LINKQ,
-  MUX_LINK, R_LINK, ...) so use whatever the port lists actually call it,
-  do not assume it must be named exactly "G_LINK"/"GR_LINK1".
-- Concretely: scan both port lists for any output whose name contains
-  "LINK" and any input whose name contains "LINK". If you find a
-  plausible pair (one block's "*LINK*" output and the other's "*LINK*"
-  input), you MUST output that connection in "connections" with
-  confidence >= 0.95, even if the summary's prose doesn't spell it out
-  in so many words - the port names themselves are the evidence. This is
-  true for a normal, single-instance setup even when the manual also
-  discusses other configurations (multiple groups/routes, multiplexers)
-  that don't apply here.
+- FIRST check the precondition: this rule only applies when one of these
+  two blocks is actually a supervisory "group"/"route" block (its own
+  block_type, description, or Purpose section identifies it as a group,
+  route, or master coordinating other objects) and the other is a
+  member/component of that specific group/route. If neither block is a
+  group/route supervisor - e.g. both are peer field-device blocks such
+  as a drive and a measurement/annunciation/process-feedback block -
+  this rule does NOT apply, even if both port lists happen to contain
+  "LINK" in some port name. Sharing the substring "LINK" is not, by
+  itself, evidence of a group/component relationship: most CEMAT blocks
+  have some kind of *LINK* port for unrelated purposes (e.g. joining a
+  totally different group, or being a slave object of a third block), so
+  do not force a connection here without first confirming one side is
+  genuinely the group/route being joined.
+- Once (and only once) that precondition is confirmed: CEMAT ALWAYS
+  physically wires the group to that component through a dedicated link
+  interface - the exact name varies per block (G_LINK, GR_LINK1,
+  GR_LINK2, O_LINK, O_LINKQ, MUX_LINK, R_LINK, ...) so use whatever the
+  port lists actually call it, do not assume it must be named exactly
+  "G_LINK"/"GR_LINK1".
+- Concretely, once the precondition holds: scan both port lists for any
+  output whose name contains "LINK" and any input whose name contains
+  "LINK". If you find a plausible pair (one block's "*LINK*" output and
+  the other's "*LINK*" input), you MUST output that connection in
+  "connections" with confidence >= 0.95, even if the summary's prose
+  doesn't spell it out in so many words - the port names themselves are
+  the evidence. This is true for a normal, single-instance setup even
+  when the manual also discusses other configurations (multiple
+  groups/routes, multiplexers) that don't apply here.
 - CRITICAL - GETTING THE DIRECTION RIGHT: the "*LINK*" port name that
   contains "LINK" can legitimately appear on EITHER side as an input
   in one block and as an output in the other - do not assume which

@@ -1,21 +1,21 @@
 {
   "connections": [
     {
-      "from_block": "C_MEAS_I",
-      "from_port": "RT_MIS",
-      "to_block": "C_ANASEL",
-      "to_port": "In01",
-      "reason": "C_MEAS_I output feeds C_ANASEL input for further processing",
-      "confidence": 0.9,
+      "from_block": "C_MEASUR",
+      "from_port": "PV_Out",
+      "to_block": "C_DRV_1D",
+      "to_port": "AV",
+      "reason": "Analog input from C_MEASUR feeds into C_DRV_1D for control based on the analog input's value",
+      "confidence": 0.95,
       "inverted": false
     },
     {
-      "from_block": "C_MEAS_I",
-      "from_port": "RT_MIS",
-      "to_block": "C_ANASEL",
-      "to_port": "In01Stat",
-      "reason": "C_MEAS_I output feeds C_ANASEL input for signal status",
-      "confidence": 0.8,
+      "from_block": "C_MEASUR",
+      "from_port": "PV_Stat",
+      "to_block": "C_DRV_1D",
+      "to_port": "AV_Stat",
+      "reason": "Unit and status associated with PV_Out from C_MEASUR feeds into AV_Stat of C_DRV_1D",
+      "confidence": 0.95,
       "inverted": false
     }
   ],
