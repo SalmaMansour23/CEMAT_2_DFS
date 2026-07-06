@@ -1,0 +1,89 @@
+{
+  "block_name": "StartButton_DI",
+  "block_type": "Digital Input Signal Processing Block",
+  "description": "The StartButton_DI block processes a digital input value and generates a quality code based on the input value and other parameters.",
+  "inputs": [
+    {
+      "name": "VALUE",
+      "datatype": "BOOL",
+      "description": "The digital input value from the process image"
+    },
+    {
+      "name": "VALUE_QC",
+      "datatype": "BOOL",
+      "description": "The value status of the digital input channel"
+    },
+    {
+      "name": "MODE",
+      "datatype": "DWORD",
+      "description": "Influences how the block treats the digital input value"
+    },
+    {
+      "name": "PQC",
+      "datatype": "BOOL",
+      "description": "Determines if the block reads the value status of the digital value from the process image"
+    },
+    {
+      "name": "SIM_I",
+      "datatype": "BOOL",
+      "description": "The simulation value output when SIM_ON is TRUE"
+    },
+    {
+      "name": "SIM_ON",
+      "datatype": "BOOL",
+      "description": "Activates simulation mode, giving SIM_I the highest priority"
+    },
+    {
+      "name": "SUBS_I",
+      "datatype": "BOOL",
+      "description": "The substitute value used when the digital input value is invalid and SUBS_ON is TRUE"
+    },
+    {
+      "name": "SUBS_ON",
+      "datatype": "BOOL",
+      "description": "Enables the use of a substitute value when the digital input is invalid"
+    },
+    {
+      "name": "LAST_ON",
+      "datatype": "BOOL",
+      "description": "Determines if the last valid output value should be held when the current value is invalid"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "Q",
+      "datatype": "BOOL",
+      "description": "The processed digital output value"
+    },
+    {
+      "name": "QBAD",
+      "datatype": "BOOL",
+      "description": "Indicates if the output value Q is invalid"
+    },
+    {
+      "name": "QLAST",
+      "datatype": "BOOL",
+      "description": "Indicates if the last valid value injection is active"
+    },
+    {
+      "name": "QMOD_ERR",
+      "datatype": "BOOL",
+      "description": "Indicates a higher-level error"
+    },
+    {
+      "name": "QSIM",
+      "datatype": "BOOL",
+      "description": "Indicates if simulation mode is active"
+    },
+    {
+      "name": "QSUBS",
+      "datatype": "BOOL",
+      "description": "Indicates if a substitute value is being used"
+    },
+    {
+      "name": "QUALITY",
+      "datatype": "BYTE",
+      "description": "The quality code of the output value Q, indicating its status"
+    }
+  ]
+}

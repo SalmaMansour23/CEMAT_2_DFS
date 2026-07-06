@@ -1,22 +1,49 @@
 {
   "connections": [
     {
-      "from_block": "C_MEASUR",
-      "from_port": "PV_Out",
+      "from_block": "StartButton_DI",
+      "from_port": "Q",
+      "to_block": "StopButton_DI",
+      "to_port": "MODE",
+      "reason": "Start button output controls stop button mode",
+      "confidence": 0.8,
+      "inverted": false
+    },
+    {
+      "from_block": "StopButton_DI",
+      "from_port": "Q",
+      "to_block": "StartButton_DI",
+      "to_port": "MODE",
+      "reason": "Stop button output controls start button mode",
+      "confidence": 0.8,
+      "inverted": false
+    },
+    {
+      "from_block": "StartButton_DI",
+      "from_port": "Q",
       "to_block": "C_DRV_1D",
-      "to_port": "AV",
-      "reason": "Analog input from C_MEASUR feeds into C_DRV_1D for control based on the analog input's value",
+      "to_port": "EBFE",
+      "reason": "Start button DI output starts C_DRV",
       "confidence": 0.95,
       "inverted": false
     },
     {
-      "from_block": "C_MEASUR",
-      "from_port": "PV_Stat",
+      "from_block": "StopButton_DI",
+      "from_port": "Q",
       "to_block": "C_DRV_1D",
-      "to_port": "AV_Stat",
-      "reason": "Unit and status associated with PV_Out from C_MEASUR feeds into AV_Stat of C_DRV_1D",
+      "to_port": "EBFE",
+      "reason": "User-supplied guidance indicates StopButton_DI output starts C_DRV_1D",
       "confidence": 0.95,
       "inverted": false
+    },
+    {
+      "from_block": "StopButton_DI",
+      "from_port": "Q",
+      "to_block": "C_DRV_1D",
+      "to_port": "EBFA",
+      "reason": "User-supplied guidance indicates StopButton_DI output stops C_DRV_1D, assuming EBFA is used for stop command",
+      "confidence": 0.8,
+      "inverted": true
     }
   ],
   "uncertain_connections": []

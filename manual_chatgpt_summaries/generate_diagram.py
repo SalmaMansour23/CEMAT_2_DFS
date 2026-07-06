@@ -967,10 +967,21 @@ def draw_connections(ax, connections: list, blocks_by_name: dict, layouts: dict,
     "highway" lane below the whole drawing - every such wire gets its
     own lane so they never overlap - since those pins face away from
     each other and a straight line would have to cut through boxes in
-    between."""
+    between.
+
+    Highway wires additionally stagger their vertical drop near the
+    source and their vertical rise near the destination (side_lane
+    below) - without this, every highway wire leaving the same source
+    block (or entering the same destination block) would drop/rise
+    along the exact same x position regardless of which port it's
+    actually on, making them visually indistinguishable from each other
+    even though their horizontal "basement" row is already unique."""
     lowest_bottom = min(l["bottom"] for l in layouts.values())
     wrap_offset = 1.5
+    side_stagger = 0.35
     wrap_count = 0
+    from_lane_count: dict = {}
+    to_lane_count: dict = {}
     forward_lane = 0
     n_forward = sum(1 for c in connections if is_forward(c))
     colors = connection_colors(len(connections))
@@ -990,8 +1001,10 @@ def draw_connections(ax, connections: list, blocks_by_name: dict, layouts: dict,
             xs = [x1, x_mid, x_mid, x2]
             ys = [y_from, y_from, y_to, y_to]
         else:
-            x1 = from_layout["right"] + STUB
-            x2 = to_layout["left"] - STUB
+            from_lane_count[from_name] = from_lane_count.get(from_name, 0) + 1
+            to_lane_count[to_name] = to_lane_count.get(to_name, 0) + 1
+            x1 = from_layout["right"] + STUB + (from_lane_count[from_name] - 1) * side_stagger
+            x2 = to_layout["left"] - STUB - (to_lane_count[to_name] - 1) * side_stagger
             wrap_y = lowest_bottom - (2 + wrap_count * wrap_offset)
             wrap_count += 1
             xs = [x1, x1, x2, x2]

@@ -1,2 +1,2 @@
-The analog input from C_MEAS feeds into the motor C_DRV to control it 
-based on the analog input's value.
+Start button di output starts C_DRV. Stop button di output stops it. Analog input c_measur output is an input to the motor,
+controlling it based on its value. The 3 inputs are independent of each other but all feed into the motor.

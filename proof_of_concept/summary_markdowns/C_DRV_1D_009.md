@@ -2,199 +2,116 @@
 
 ## Purpose
 
-The `C_DRV_1D` block controls and supervises a single unidirectional drive (motor). It supports automatic control from a `C_GROUP`, manual and local operation, interlock supervision, protection monitoring, start/stop sequencing, diagnostics, and HMI integration. Besides basic motor control, it can optionally integrate with SIMOCODE, subcontrol blocks (e.g. VSDs), measured values, maintenance functions, setpoint control, and Power Management. 
+The `C_DRV_1D` block controls and supervises a single unidirectional motor or drive in a cement plant. It supports automatic control from a group, individual operator control (single-start mode), and local operation from field pushbuttons. The block supervises electrical availability, overloads, interlocks, speed feedback, and optional measured values, while providing running status, fault reporting, and HMI integration. 
 
 ## Inputs
 
-* `FbkRun` (BOOL): Contactor feedback. Normally connected to the motor contactor auxiliary contact. Used with `ContOn` to supervise successful start and stop.
-* `ElAvail` (BOOL): Electrical availability signal. Typically connected from MCC/control power. Prevents starting and trips a running drive when FALSE.
-* `Overload` (BOOL): Thermal/mechanical overload input, typically from overload relay or motor protection.
-* `AutModLo` (BOOL): Local field switch signal. Normally a repair switch or local/automatic selector depending on feature settings.
-* `StopLoc` (BOOL): Local stop pushbutton/switch from the field.
-* `StartLoc` (BOOL): Local start pushbutton from the field.
-* `IntStaE` (STRUCT): Essential start interlock. Process condition required before startup (e.g. lubrication running).
-* `IntStart` (STRUCT): Standard startup interlock. Typically connected to process equipment such as valve/damper position or previous device.
-* `IntOpE` (STRUCT): Essential operating interlock that must remain TRUE while running.
-* `IntOper` (STRUCT): Operating interlock. Commonly connected to downstream equipment `RunSig`.
-* `IntProtG` (STRUCT): General protection interlock active in all operating modes. Typically connected from safety/protection annunciation blocks.
-* `IntProtA` (STRUCT): Protection interlock active in automatic and selected manual modes but normally ignored in Local mode.
-* `IntStop` (STRUCT): Sequential stop interlock used for orderly shutdowns of conveying systems.
-* `Sporadic` (BOOL): Process-controlled ON/OFF input for sporadic operation after the drive has been activated by `StartAut`.
-* `ProFb` (STRUCT): Process feedback from `C_PROFB` (speed monitor, pressure monitor, etc.).
-* `MonOnly` (BOOL): Monitoring-only mode. External system controls the drive while `C_DRV_1D` only monitors status.
-* `AutModOn` (BOOL): Program command to switch the drive into Automatic mode.
-* `ManModOn` (BOOL): Program command to switch the drive into Manual mode.
-* `LocModOn` (BOOL): Program command to switch the drive into Local mode.
-* `OoSModOn` (BOOL): Forces Out-of-Service mode when FALSE.
-* `StaByEn` (BOOL): Enables standby supervision so stopped drives still generate alarms.
-* `MsgEn` (BOOL): Enables/suppresses drive messages.
-* `MsgPrio` (BOOL): Selects priority between `ElAvail` and `Overload` faults.
-* `GrFltLck` (BOOL): Excludes drive faults from group summarizing indication.
-* `GrStaLck` (BOOL): Excludes drive from both group status call and summarizing indication.
-* `LampTest` (BOOL): Lamp test input.
-* `Ack` (BOOL): External acknowledgement input. Normally connected from group acknowledgement or pushbutton.
-* `StartAut` (BOOL): Automatic start command. Normally comes from group `CmdOn` or route command.
-* `StopAut` (BOOL): Automatic stop command. Normally connected from group `PeCmdOff` or route `CmdOff`.
-* `QuickStp` (BOOL): Immediate stop command. Normally connected from group `QuicStpQ`.
-* `DSigBQ` (BOOL): OR of driver block `Bad` outputs.
-* `DSimAct` (BOOL): OR of driver block simulation outputs.
-* `PMinvol` (STRUCT): Indicates participation in Power Management.
-* `PMblock` (BOOL): Power Management blocking input.
-* `Netfault` (BOOL): Network fault indication (display only).
-* `SimoStat` (STRUCT): Status from `C_SIMOS`/SIMOCODE adapter.
-* `SubCFp` (ANY): Connection to a subcontrol block faceplate.
-* `SubCFlt` (STRUCT): General fault from subcontrol block (SINAMICS, ROBICON, etc.).
-* `AV` (STRUCT): Analog value from `C_MEASUR` or `C_ANA_SEL`.
-* `AV_Stat` (STRUCT): Unit and status associated with `AV`.
-* `AV_Perc` (STRUCT): Percentage value (typically motor current or power).
-* `SP_ExEn` (BOOL): Enables external setpoint.
-* `SP_TrkPV` (BOOL): Enables setpoint tracking.
-* `SP_Os` (REAL): Internal HMI setpoint.
-* `SP_Ex` (STRUCT): External setpoint (typically from PID controller).
-* `SP_HiLim` (REAL): Upper setpoint limit.
-* `SP_LoLim` (REAL): Lower setpoint limit.
-* `PV` (STRUCT): Actual process value for the setpoint function.
-* `UserFbk` (BOOL): Status feedback for the optional User button.
-* `UserPulse` (BOOL): Rising edge triggers `UserOut`.
-* `TEST_OSS`, `SimuStatus`, `SimuSave`, `SimuSPSave`: Internal testing/sequence-test interfaces.
-* `MSG8_EVID`, `MSG8_EVID2`, `COMMAND`, `ExtCmd`: OS/HMI interfaces.
-* `FbkMonTi`, `FbkOffTi`, `StaDelTi`, `StpDelTi`, `WarnTi`: Process timing parameters.
-* `UserStatus` (WORD): User-defined HMI status bits.
-* `SelFp1` (ANY): Additional user faceplate.
-* `MaiInt`, `MaiRL`: Maintenance interval parameters.
-* `FeatMaster` (BOOL): Uses Feature Master configuration.
-* `OS_Perm`, `Feature`, `Feature2`: Configuration structures.
-* `OpSt_In` (DWORD): Enabled operator stations.
-* `GR_LINK1` (STRUCT): Primary group/route connection.
-* `GR_LINK2` (STRUCT): Secondary group/route connection.
-* `MUX_LINK` (STRUCT): Connection from `C_MUX` when linked to more than two groups/routes.
-* `O_LINK` (STRUCT): Object link from `C_SEND_G` for cross-AS systems.
-* `EventTsIn` (ANY): EventTs timestamp interface.
-* `ResTimOS`, `MaiRTm`, `MaiRTh`, `MaiCo`, `MaiCntSt`, `MaiCntTr`, `MaiFtDur`, `MAI_STA`, `MaiCorr`, `MaiCyc`: Maintenance/runtime interfaces used mainly by the maintenance system and OS.
+* `ERM` (BOOL): Contactor feedback from the motor starter. Monitored together with output `EBE`.
+* `ESB` (BOOL): Electrical availability signal from the MCC or motor supply.
+* `EBM` (BOOL): Overload/bimetal healthy signal from the motor protection.
+* `EVO` (BOOL): Local/remote selector switch from the field.
+* `ESP` (BOOL): Local stop pushbutton.
+* `ESR` (BOOL): Local start pushbutton.
+* `EEVG` (BOOL): Start interlock, typically from another process object such as a damper position.
+* `IntStart` (STRUCT): Structured start interlock, typically connected from another block's structure output (e.g. `PosSig1` of a damper or an interlock block).
+* `EBVG` (BOOL): Operating interlock, typically from the downstream drive running signal.
+* `IntOper` (STRUCT): Structured operating interlock, commonly connected from another drive's `RunSig`.
+* `ESVG` (BOOL): General protection interlock, typically driven from an annunciation block output.
+* `IntProtG` (STRUCT): Structured general protection interlock.
+* `ESVA` (BOOL): Protection interlock active only in automatic/single-start mode.
+* `IntProtA` (STRUCT): Structured automatic-mode protection interlock.
+* `ESPO` (BOOL): Sporadic ON/OFF control signal for automatic operation.
+* `EDRW` (BOOL): Hardware speed monitor input.
+* `REL_SSM` (BOOL): Enables software speed monitor.
+* `SW_SPEED` (BOOL): Pulse input for software speed monitor.
+* `SM_EVS_I` (BOOL): Determines when running feedback is generated with the speed monitor.
+* `L_STA_WA` (BOOL): Enables startup warning in local mode.
+* `NSTP_L_A` (BOOL): Allows switching from local to automatic without stopping.
+* `LST_ACT` (BOOL): Makes local stop active in automatic mode.
+* `ELOC` (BOOL): Local mode release, normally connected from the group's local-mode output.
+* `EEIZ` (BOOL): Single-start mode release, normally connected from the group's single-start output.
+* `ESTB` (BOOL): Standby mode enable.
+* `ETFG` (BOOL): Inching mode enable.
+* `EMFR` (BOOL): Message enable signal, typically from control-voltage OK.
+* `EMZS` (BOOL): Prevents faults from contributing to group summarizing indication.
+* `GFSO` (BOOL): Removes drive from group fault/status processing.
+* `ELPZ` (BOOL): Lamp test input.
+* `EQIT` (BOOL): External acknowledgement input.
+* `EBFE` (BOOL): Automatic start command, typically from group `GBE` or route `WBE`.
+* `EBFA` (BOOL): Automatic stop command, typically from group `GDE` or route `WDE`.
+* `QSTP` (BOOL): Quick-stop command from the controlling group.
+* `DSIG_BQ` (BOOL): OR of driver block bad-quality outputs.
+* `DSIG_SIM` (BOOL): OR of driver block simulation outputs.
+* `REL_SC` (BOOL): Enables SIMOCODE integration.
+* `STAT_SC` (BYTE): Status from SIMOCODE adapter block.
+* `SUBC_FT` (BOOL): General fault from subcontrol block.
+* `REL_MVC` (BOOL): Enables motor-current display.
+* `MV_PERC` (POINTER): Percentage motor current from `C_MEASUR` or `C_SIMOS`.
+* `PV` (STRUCT): Process value for display, typically from `C_MEASUR` or `C_ANA_SEL`.
+* `PV_Stat` (STRUCT): Unit and status associated with `PV`.
+* `EN_SP` (BOOL): Enables setpoint function.
+* `EN_SPEX` (BOOL): Enables external setpoint.
+* `SP_TR` (BOOL): Enables setpoint tracking.
+* `SP_IN` (REAL): Operator-entered setpoint.
+* `SP_EX` (STRUCT): External setpoint from another control block (e.g. PID controller).
+* `PV_IN` (STRUCT): Actual process value for the setpoint function.
+* `UserFace` (ANY): Reference to another faceplate.
+* `TEST_OSS` (INTEGER): Internal testing interface.
+* `MSG8_EVID` (DWORD): OS message interface.
+* `COMMAND` (WORD): OS command interface.
+* `FEEDBTIM`, `STARTDEL`, `STOPDEL`, `SPEEDTIM`, `HORN_TIM`, `TOL_SSM` (INTEGER): Timing parameters.
+* `GR_LINK1` (STRUCT): Primary group/route link.
+* `GR_LINK2` (STRUCT): Secondary group/route link.
+* `MUX_LINK` (STRUCT): Link from `C_MUX`.
+* `MAI_INT`, `MAI_REQL` (DWORD): Maintenance parameters.
 
 ## Outputs
 
-* `SP_Out` (STRUCT): Final validated setpoint output for channel driver or VSD/subcontrol block.
-* `INTFC_OS`, `VISU_OS`, `STATUS`, `STATUS2`, `STATUS3`, `STATUS4`, `ALARM`: OS diagnostic interfaces.
-* `FeatureOut`, `FeatureOut2`, `OS_PermOut`, `OS_PermLog`, `FWCopyMaster`, `FW2CopyMaster`, `OSCopyMaster`: Configuration status outputs.
-* `OpSt_Out` (DWORD): Enabled operator stations for downstream blocks.
-* `DelayCon`, `NO_OF_I`, `FT1`-`FT20`: Internal OS/status interfaces.
-* `RunSig` (STRUCT): Running feedback used for downstream interlocks and group feedback.
-* `DynFlt` (BOOL): Dynamic fault indication.
-* `Fault` (BOOL): General fault indication.
-* `AckQ` (BOOL): Internal acknowledgement output.
-* `LaStopRe` (STRUCT): Last stop reason and timestamp.
-* `WarnAct` (BOOL): Startup warning output for horn/lamp.
-* `RunSigSp` (BOOL): Running/activated feedback for sporadic drives.
-* `SimActQ` (BOOL): Simulation active.
-* `AutoAct` (BOOL): Automatic mode active.
-* `ManuAct` (BOOL): Manual mode active.
-* `LocalAct` (BOOL): Local mode active.
-* `OoSAct` (BOOL): Out-of-Service active.
-* `PMrel` (BOOL): Power Management enabled output.
-* `MaintRQ` (BOOL): Maintenance request.
-* `MaintAL` (BOOL): Maintenance alarm.
-* `MaiRTm_Q`, `MaiRTh_Q`, `MaiCo_Q`, `MaiTr_Q`, `MaiFt_Q`, `MaiCyc_Q`: Runtime and maintenance counters.
-* `ContOn` (BOOL): Main contactor ON command.
-* `Lamp` (BOOL): Combined running/fault lamp output.
-* `UserOut` (BOOL): One-cycle user pulse output.
-* `O_LINKQ` (STRUCT): Object link output for connected slave annunciation, measurement, and process feedback blocks.
-* `ST_Worst` (BYTE): Worst signal quality status.
-* `ErrorNum` (INT): Engineering/configuration error.
-* `MsgAckn1`, `MsgAckn2` (WORD): Message acknowledgement status. 
+* `EVS` (BOOL): Running signal used as feedback to the group/route and as an interlock.
+* `RunSig` (STRUCT): Structured running signal for connection to other blocks' structured interlocks.
+* `EST` (BOOL): Dynamic fault indication.
+* `SST` (BOOL): General fault indication.
+* `HORN` (BOOL): Startup warning output for horn or lamp.
+* `EVSP` (BOOL): Running signal for sporadic drives; typically used as group feedback.
+* `SIM_ON` (BOOL): Simulation active output for driver blocks.
+* `SP_O` (STRUCT): Validated setpoint output to a VSD or driver block.
+* `EBE` (BOOL): Contactor ON command.
+* `ELS` (BOOL): Running/fault lamp output.
+* `MAI_REQ` (BOOL): Maintenance request.
+* `MAI_AL` (BOOL): Maintenance alarm.
+* `INTFC_OS`, `VISU_OS`, `STATUS`, `STATUS2`, `STATUS3`, `ALARM`: OS/HMI interfaces.
+* `CURR_OS` (INTEGER): Motor current/power display value.
+* `DLY_CNT` (INTEGER): Delay counter for OS.
+
 ## Group/Object Links
 
-* `GR_LINK1` (STRUCT): Primary group/route link. Connect to the `G_LINK` output of the main `C_GROUP` or to a route `R_LINK`. The main group should always use `GR_LINK1`.
-* `GR_LINK2` (STRUCT): Secondary group/route link when the drive belongs to two groups or routes.
+* `GR_LINK1` (STRUCT): Connect to a group's `G_LINK` output or a route's `R_LINK`.
+* `GR_LINK2` (STRUCT): Connect to a second group or route if the drive belongs to two.
 * `MUX_LINK` (STRUCT): Connect to `MUX_OUT` of `C_MUX` when the drive belongs to more than two groups/routes.
-* `O_LINK` (STRUCT, input): Cross-AS object link. Connect from `O_LINKQ` output of `C_SEND_G`.
-* `O_LINKQ` (STRUCT, output): Object link output for slave objects such as `C_ANNUNC`, `C_ANNUN8`, `C_MEASUR`, and `C_PROFB`. Connected slave objects automatically become part of the drive and group diagnostics without requiring direct group links.
 
 ## Key Connection Notes
 
-* `StartAut` normally receives the `CmdOn` output from the associated `C_GROUP` or route.
-* `StopAut` normally receives the group's `PeCmdOff` (continuous OFF) or a route stop command.
-* `QuickStp` should be connected to the group's `QuicStpQ` output for immediate stopping without stop delay.
-* `RunSig` is the standard running feedback. It is typically connected to:
-
-  * downstream drive interlocks (`IntOper`),
-  * group `FbObjOn`,
-  * route/group run feedback.
-* For sporadic drives, use `RunSigSp` instead of `RunSig` as the feedback to the group/route because it remains active while the drive is logically activated even if temporarily stopped by the `Sporadic` input.
-* Typical sequential conveyor connection:
-
-  * previous/downstream drive `RunSig` → current drive `IntOper`.
-* Typical startup dependency:
-
-  * valve/damper `PosSig1` → drive `IntStart`.
-* `IntProtG` and `IntProtA` should receive the `OutSig` output of `C_ANNUNC` or `C_ANNUN8` blocks rather than raw protection signals so that timing, simulation, and diagnostics remain consistent.
-* `ProFb` must be connected to the output `ProFb` of a `C_PROFB` block for process-feedback supervision.
-* For SIMOCODE drives:
-
-  * `SimoStat` ← `C_SIMOS.SimoStat`
-  * `AV_Perc` ← `C_SIMOS.I_PERC` (optional current/power display).
-* For subcontrol/VSD applications:
-
-  * `ContOn` → subcontrol start command.
-  * subcontrol running feedback → `FbkRun`.
-  * subcontrol fault → `SubCFlt`.
-  * any subcontrol OS interface → `SubCFp`.
-* For measured values:
-
-  * `AV` ← `C_MEASUR.PV_Out` or `C_ANA_SEL.Out_Val`.
-  * `AV_Stat` ← `PV_Stat` or `Out_Stat`.
-  * `AV_Perc` ← `MV_Perc` when displaying motor current or power.
-* For setpoint control:
-
-  * external controller → `SP_Ex`.
-  * validated output `SP_Out` → channel driver or VSD/subcontrol block.
-* `WarnAct` should be ORed with the group's warning horn/lamp output when both group and drive startup warnings are used.
-* `Ack` may be connected to:
-
-  * a local acknowledge pushbutton,
-  * `AckGr` from the associated group for group-wise acknowledgement.
-* If `Feature.bit25 = TRUE` on both drive and group, no explicit wiring is required between:
-
-  * group `AutModOn` ↔ drive `AutModOn`
-  * group `ManModOn` ↔ drive `ManModOn`
-  * group `LocModOn` ↔ drive `LocModOn`
-    because mode changes are transferred automatically via `GR_LINK`.
-* Likewise, if `Feature.bit26 = TRUE`, manual feedback wiring is unnecessary because:
-
-  * `LocalAct`
-  * `ManuAct`
-  * `OoSAct`
-    are transferred automatically through `GR_LINK`.
-* Otherwise connect:
-
-  * `LocalAct` → group `FbObjLoc`
-  * `ManuAct` → group `FbObjMan`
-  * `OoSAct` → group `FbObjOoS`
-* If `Feature.bit28 = TRUE`, the drive automatically transfers "Not Empty" information to the group via `GR_LINK`; otherwise connect `DynFlt` (for conveying equipment) to the group's `MatFlt`.
-* When using slave objects:
-
-  * drive `O_LINKQ` → `O_LINK` of `C_ANNUNC`, `C_PROFB`, `C_MEASUR`, etc.
-  * these slave objects should **not** be connected directly to the group.
-* For cross-AS applications:
-
-  * `C_SEND_G.O_LINKQ` → drive `O_LINK`.
-  * group `G_LINK` → `C_RECV_G.G_LINK`.
-* A drive may use either:
-
-  * `GR_LINK1` / `GR_LINK2` / `MUX_LINK`
-  * **or** `O_LINK`
-    but never both simultaneously.
-* Runtime order is mandatory:
-
-  1. Child objects (`C_PROFB`, `C_ANNUNC`, measurements, adapters)
-  2. `C_MUX`
-  3. `C_DRV_1D`
-  4. Routes
-  5. Groups
-* `EventTsOut` from an `EventTs` block connects directly to `EventTsIn`.
+* `GR_LINK1` must be connected to the associated group's `G_LINK` output or route's `R_LINK`.
+* If the drive belongs to two groups/routes, connect the second one to `GR_LINK2`.
+* If the drive belongs to more than two groups/routes, use `C_MUX`; connect `MUX_OUT` → `MUX_LINK`.
+* `EBFE` normally receives the automatic start command (`GBE`) from the associated group or (`WBE`) from the associated route.
+* `EBFA` normally receives the automatic stop command (`GDE`/`WDE`) from the controlling group or route.
+* `QSTP` should receive the group's quick-stop signal (`GQS`).
+* `ELOC` is normally connected to the group's local-mode output (`GLO`).
+* `EEIZ` is normally connected to the group's single-start output (`GES`).
+* `EQIT` should receive the group's acknowledgement output (`ACK`) for group-wise acknowledgement.
+* `IntOper` commonly receives the `RunSig` output of the downstream drive.
+* `IntStart` commonly receives a structured signal such as a damper `PosSig1`.
+* `IntProtG` and `IntProtA` should receive the `OutSig` output of a `C_ANNUNC` or `C_ANNUN8` block rather than the raw protection signal.
+* `MV_PERC` should be connected to `C_MEASUR.MV_PERC` or `C_SIMOS.I_PERC`.
+* `PV` should receive `C_MEASUR.PV_Out` (single measurement) or `C_ANA_SEL.Out_Val` (multiple measurements).
+* `PV_Stat` should receive `C_MEASUR.PV_Stat` or `C_ANA_SEL.Out_Stat`.
+* `SP_O` should connect to a VSD or driver block.
+* `SIM_ON` may be connected to the `SIM_ON` inputs of channel driver blocks.
+* Runtime order: drives execute before routes, routes before groups; any `C_MUX` executes before the drive.
 
 ## Uncertain / Ambiguous Points
 
-* The manual contains many optional features (maintenance, setpoint control, SIMOCODE, subcontrol, User button, Power Management). These interfaces are only required when the corresponding feature is enabled.
-* Several maintenance, OS, visualization, and diagnostic interfaces (`STATUS*`, `VISU_OS`, `COMMAND`, `MSG8_EVID*`, maintenance counters, etc.) are intended primarily for HMI integration rather than process wiring.
-* Numerous Feature bits modify Local switch behavior (`AutModLo`, `StartLoc`, `StopLoc`) through different switch matrices (KXK0, CAIMA, LOC_010). The exact field wiring depends on the plant standard selected during engineering rather than on the block interface itself. 
+* The manual contains both legacy BOOL interfaces (`EEVG`, `EBVG`, `ESVG`, etc.) and newer structured interfaces (`IntStart`, `IntOper`, `IntProtG`, etc.) that provide equivalent functionality. The intended choice depends on the surrounding project architecture.
+* Several optional interfaces (SIMOCODE, setpoint control, maintenance, subcontrol, measured-value display) are only required when those features are enabled.
+* OS, maintenance, visualization, and diagnostic interfaces (`STATUS*`, `VISU_OS`, `COMMAND`, maintenance counters, etc.) are primarily intended for HMI integration rather than functional process wiring. 

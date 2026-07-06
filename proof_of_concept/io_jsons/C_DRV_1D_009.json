@@ -1,689 +1,429 @@
 {
   "block_name": "C_DRV_1D",
-  "block_type": "Drive Control Block",
-  "description": "The C_DRV_1D block controls and supervises a single unidirectional drive, supporting automatic control, manual and local operation, interlock supervision, protection monitoring, and HMI integration.",
+  "block_type": "Motor/Drive Control Block",
+  "description": "The C_DRV_1D block controls and supervises a single unidirectional motor or drive in a cement plant.",
   "inputs": [
     {
-      "name": "FbkRun",
+      "name": "ERM",
       "datatype": "BOOL",
-      "description": "Contactor feedback"
+      "description": "Contactor feedback from the motor starter"
     },
     {
-      "name": "ElAvail",
+      "name": "ESB",
       "datatype": "BOOL",
-      "description": "Electrical availability signal"
+      "description": "Electrical availability signal from the MCC or motor supply"
     },
     {
-      "name": "Overload",
+      "name": "EBM",
       "datatype": "BOOL",
-      "description": "Thermal/mechanical overload input"
+      "description": "Overload/bimetal healthy signal from the motor protection"
     },
     {
-      "name": "AutModLo",
+      "name": "EVO",
       "datatype": "BOOL",
-      "description": "Local field switch signal"
+      "description": "Local/remote selector switch from the field"
     },
     {
-      "name": "StopLoc",
+      "name": "ESP",
       "datatype": "BOOL",
-      "description": "Local stop pushbutton/switch"
+      "description": "Local stop pushbutton"
     },
     {
-      "name": "StartLoc",
+      "name": "ESR",
       "datatype": "BOOL",
       "description": "Local start pushbutton"
     },
     {
-      "name": "IntStaE",
-      "datatype": "STRUCT",
-      "description": "Essential start interlock"
+      "name": "EEVG",
+      "datatype": "BOOL",
+      "description": "Start interlock, typically from another process object such as a damper position"
     },
     {
       "name": "IntStart",
       "datatype": "STRUCT",
-      "description": "Standard startup interlock"
+      "description": "Structured start interlock, typically connected from another block's structure output"
     },
     {
-      "name": "IntOpE",
-      "datatype": "STRUCT",
-      "description": "Essential operating interlock"
+      "name": "EBVG",
+      "datatype": "BOOL",
+      "description": "Operating interlock, typically from the downstream drive running signal"
     },
     {
       "name": "IntOper",
       "datatype": "STRUCT",
-      "description": "Operating interlock"
+      "description": "Structured operating interlock, commonly connected from another drive's RunSig"
+    },
+    {
+      "name": "ESVG",
+      "datatype": "BOOL",
+      "description": "General protection interlock, typically driven from an annunciation block output"
     },
     {
       "name": "IntProtG",
       "datatype": "STRUCT",
-      "description": "General protection interlock"
+      "description": "Structured general protection interlock"
+    },
+    {
+      "name": "ESVA",
+      "datatype": "BOOL",
+      "description": "Protection interlock active only in automatic/single-start mode"
     },
     {
       "name": "IntProtA",
       "datatype": "STRUCT",
-      "description": "Protection interlock active in automatic and selected manual modes"
+      "description": "Structured automatic-mode protection interlock"
     },
     {
-      "name": "IntStop",
-      "datatype": "STRUCT",
-      "description": "Sequential stop interlock"
-    },
-    {
-      "name": "Sporadic",
+      "name": "ESPO",
       "datatype": "BOOL",
-      "description": "Process-controlled ON/OFF input for sporadic operation"
+      "description": "Sporadic ON/OFF control signal for automatic operation"
     },
     {
-      "name": "ProFb",
-      "datatype": "STRUCT",
-      "description": "Process feedback from C_PROFB"
-    },
-    {
-      "name": "MonOnly",
+      "name": "EDRW",
       "datatype": "BOOL",
-      "description": "Monitoring-only mode"
+      "description": "Hardware speed monitor input"
     },
     {
-      "name": "AutModOn",
+      "name": "REL_SSM",
       "datatype": "BOOL",
-      "description": "Program command to switch the drive into Automatic mode"
+      "description": "Enables software speed monitor"
     },
     {
-      "name": "ManModOn",
+      "name": "SW_SPEED",
       "datatype": "BOOL",
-      "description": "Program command to switch the drive into Manual mode"
+      "description": "Pulse input for software speed monitor"
     },
     {
-      "name": "LocModOn",
+      "name": "SM_EVS_I",
       "datatype": "BOOL",
-      "description": "Program command to switch the drive into Local mode"
+      "description": "Determines when running feedback is generated with the speed monitor"
     },
     {
-      "name": "OoSModOn",
+      "name": "L_STA_WA",
       "datatype": "BOOL",
-      "description": "Forces Out-of-Service mode when FALSE"
+      "description": "Enables startup warning in local mode"
     },
     {
-      "name": "StaByEn",
+      "name": "NSTP_L_A",
       "datatype": "BOOL",
-      "description": "Enables standby supervision"
+      "description": "Allows switching from local to automatic without stopping"
     },
     {
-      "name": "MsgEn",
+      "name": "LST_ACT",
       "datatype": "BOOL",
-      "description": "Enables/suppresses drive messages"
+      "description": "Makes local stop active in automatic mode"
     },
     {
-      "name": "MsgPrio",
+      "name": "ELOC",
       "datatype": "BOOL",
-      "description": "Selects priority between ElAvail and Overload faults"
+      "description": "Local mode release, normally connected from the group's local-mode output"
     },
     {
-      "name": "GrFltLck",
+      "name": "EEIZ",
       "datatype": "BOOL",
-      "description": "Excludes drive faults from group summarizing indication"
+      "description": "Single-start mode release, normally connected from the group's single-start output"
     },
     {
-      "name": "GrStaLck",
+      "name": "ESTB",
       "datatype": "BOOL",
-      "description": "Excludes drive from both group status call and summarizing indication"
+      "description": "Standby mode enable"
     },
     {
-      "name": "LampTest",
+      "name": "ETFG",
+      "datatype": "BOOL",
+      "description": "Inching mode enable"
+    },
+    {
+      "name": "EMFR",
+      "datatype": "BOOL",
+      "description": "Message enable signal, typically from control-voltage OK"
+    },
+    {
+      "name": "EMZS",
+      "datatype": "BOOL",
+      "description": "Prevents faults from contributing to group summarizing indication"
+    },
+    {
+      "name": "GFSO",
+      "datatype": "BOOL",
+      "description": "Removes drive from group fault/status processing"
+    },
+    {
+      "name": "ELPZ",
       "datatype": "BOOL",
       "description": "Lamp test input"
     },
     {
-      "name": "Ack",
+      "name": "EQIT",
       "datatype": "BOOL",
       "description": "External acknowledgement input"
     },
     {
-      "name": "StartAut",
+      "name": "EBFE",
       "datatype": "BOOL",
-      "description": "Automatic start command"
+      "description": "Automatic start command, typically from group GBE or route WBE"
     },
     {
-      "name": "StopAut",
+      "name": "EBFA",
       "datatype": "BOOL",
-      "description": "Automatic stop command"
+      "description": "Automatic stop command, typically from group GDE or route WDE"
     },
     {
-      "name": "QuickStp",
+      "name": "QSTP",
       "datatype": "BOOL",
-      "description": "Immediate stop command"
+      "description": "Quick-stop command from the controlling group"
     },
     {
-      "name": "DSigBQ",
+      "name": "DSIG_BQ",
       "datatype": "BOOL",
-      "description": "OR of driver block Bad outputs"
+      "description": "OR of driver block bad-quality outputs"
     },
     {
-      "name": "DSimAct",
+      "name": "DSIG_SIM",
       "datatype": "BOOL",
       "description": "OR of driver block simulation outputs"
     },
     {
-      "name": "PMinvol",
-      "datatype": "STRUCT",
-      "description": "Indicates participation in Power Management"
-    },
-    {
-      "name": "PMblock",
+      "name": "REL_SC",
       "datatype": "BOOL",
-      "description": "Power Management blocking input"
+      "description": "Enables SIMOCODE integration"
     },
     {
-      "name": "Netfault",
+      "name": "STAT_SC",
+      "datatype": "BYTE",
+      "description": "Status from SIMOCODE adapter block"
+    },
+    {
+      "name": "SUBC_FT",
       "datatype": "BOOL",
-      "description": "Network fault indication"
-    },
-    {
-      "name": "SimoStat",
-      "datatype": "STRUCT",
-      "description": "Status from C_SIMOS/SIMOCODE adapter"
-    },
-    {
-      "name": "SubCFp",
-      "datatype": "ANY",
-      "description": "Connection to a subcontrol block faceplate"
-    },
-    {
-      "name": "SubCFlt",
-      "datatype": "STRUCT",
       "description": "General fault from subcontrol block"
     },
     {
-      "name": "AV",
-      "datatype": "STRUCT",
-      "description": "Analog value from C_MEASUR or C_ANA_SEL"
-    },
-    {
-      "name": "AV_Stat",
-      "datatype": "STRUCT",
-      "description": "Unit and status associated with AV"
-    },
-    {
-      "name": "AV_Perc",
-      "datatype": "STRUCT",
-      "description": "Percentage value"
-    },
-    {
-      "name": "SP_ExEn",
+      "name": "REL_MVC",
       "datatype": "BOOL",
-      "description": "Enables external setpoint"
+      "description": "Enables motor-current display"
     },
     {
-      "name": "SP_TrkPV",
-      "datatype": "BOOL",
-      "description": "Enables setpoint tracking"
-    },
-    {
-      "name": "SP_Os",
-      "datatype": "REAL",
-      "description": "Internal HMI setpoint"
-    },
-    {
-      "name": "SP_Ex",
-      "datatype": "STRUCT",
-      "description": "External setpoint"
-    },
-    {
-      "name": "SP_HiLim",
-      "datatype": "REAL",
-      "description": "Upper setpoint limit"
-    },
-    {
-      "name": "SP_LoLim",
-      "datatype": "REAL",
-      "description": "Lower setpoint limit"
+      "name": "MV_PERC",
+      "datatype": "POINTER",
+      "description": "Percentage motor current from C_MEASUR or C_SIMOS"
     },
     {
       "name": "PV",
       "datatype": "STRUCT",
+      "description": "Process value for display, typically from C_MEASUR or C_ANA_SEL"
+    },
+    {
+      "name": "PV_Stat",
+      "datatype": "STRUCT",
+      "description": "Unit and status associated with PV"
+    },
+    {
+      "name": "EN_SP",
+      "datatype": "BOOL",
+      "description": "Enables setpoint function"
+    },
+    {
+      "name": "EN_SPEX",
+      "datatype": "BOOL",
+      "description": "Enables external setpoint"
+    },
+    {
+      "name": "SP_TR",
+      "datatype": "BOOL",
+      "description": "Enables setpoint tracking"
+    },
+    {
+      "name": "SP_IN",
+      "datatype": "REAL",
+      "description": "Operator-entered setpoint"
+    },
+    {
+      "name": "SP_EX",
+      "datatype": "STRUCT",
+      "description": "External setpoint from another control block"
+    },
+    {
+      "name": "PV_IN",
+      "datatype": "STRUCT",
       "description": "Actual process value for the setpoint function"
     },
     {
-      "name": "UserFbk",
-      "datatype": "BOOL",
-      "description": "Status feedback for the optional User button"
-    },
-    {
-      "name": "UserPulse",
-      "datatype": "BOOL",
-      "description": "Rising edge triggers UserOut"
+      "name": "UserFace",
+      "datatype": "ANY",
+      "description": "Reference to another faceplate"
     },
     {
       "name": "TEST_OSS",
-      "datatype": "ANY",
-      "description": "Internal testing/sequence-test interfaces"
-    },
-    {
-      "name": "SimuStatus",
-      "datatype": "ANY",
-      "description": "Internal testing/sequence-test interfaces"
-    },
-    {
-      "name": "SimuSave",
-      "datatype": "ANY",
-      "description": "Internal testing/sequence-test interfaces"
-    },
-    {
-      "name": "SimuSPSave",
-      "datatype": "ANY",
-      "description": "Internal testing/sequence-test interfaces"
+      "datatype": "INTEGER",
+      "description": "Internal testing interface"
     },
     {
       "name": "MSG8_EVID",
-      "datatype": "ANY",
-      "description": "OS/HMI interfaces"
-    },
-    {
-      "name": "MSG8_EVID2",
-      "datatype": "ANY",
-      "description": "OS/HMI interfaces"
+      "datatype": "DWORD",
+      "description": "OS message interface"
     },
     {
       "name": "COMMAND",
-      "datatype": "ANY",
-      "description": "OS/HMI interfaces"
-    },
-    {
-      "name": "ExtCmd",
-      "datatype": "ANY",
-      "description": "OS/HMI interfaces"
-    },
-    {
-      "name": "FbkMonTi",
-      "datatype": "ANY",
-      "description": "Process timing parameters"
-    },
-    {
-      "name": "FbkOffTi",
-      "datatype": "ANY",
-      "description": "Process timing parameters"
-    },
-    {
-      "name": "StaDelTi",
-      "datatype": "ANY",
-      "description": "Process timing parameters"
-    },
-    {
-      "name": "StpDelTi",
-      "datatype": "ANY",
-      "description": "Process timing parameters"
-    },
-    {
-      "name": "WarnTi",
-      "datatype": "ANY",
-      "description": "Process timing parameters"
-    },
-    {
-      "name": "UserStatus",
       "datatype": "WORD",
-      "description": "User-defined HMI status bits"
+      "description": "OS command interface"
     },
     {
-      "name": "SelFp1",
-      "datatype": "ANY",
-      "description": "Additional user faceplate"
+      "name": "FEEDBTIM",
+      "datatype": "INTEGER",
+      "description": "Timing parameter"
     },
     {
-      "name": "MaiInt",
-      "datatype": "ANY",
-      "description": "Maintenance interval parameters"
+      "name": "STARTDEL",
+      "datatype": "INTEGER",
+      "description": "Timing parameter"
     },
     {
-      "name": "MaiRL",
-      "datatype": "ANY",
-      "description": "Maintenance interval parameters"
+      "name": "STOPDEL",
+      "datatype": "INTEGER",
+      "description": "Timing parameter"
     },
     {
-      "name": "FeatMaster",
-      "datatype": "BOOL",
-      "description": "Uses Feature Master configuration"
+      "name": "SPEEDTIM",
+      "datatype": "INTEGER",
+      "description": "Timing parameter"
     },
     {
-      "name": "OS_Perm",
-      "datatype": "ANY",
-      "description": "Configuration structures"
+      "name": "HORN_TIM",
+      "datatype": "INTEGER",
+      "description": "Timing parameter"
     },
     {
-      "name": "Feature",
-      "datatype": "ANY",
-      "description": "Configuration structures"
-    },
-    {
-      "name": "Feature2",
-      "datatype": "ANY",
-      "description": "Configuration structures"
-    },
-    {
-      "name": "OpSt_In",
-      "datatype": "DWORD",
-      "description": "Enabled operator stations"
+      "name": "TOL_SSM",
+      "datatype": "INTEGER",
+      "description": "Timing parameter"
     },
     {
       "name": "GR_LINK1",
       "datatype": "STRUCT",
-      "description": "Primary group/route connection"
+      "description": "Primary group/route link"
     },
     {
       "name": "GR_LINK2",
       "datatype": "STRUCT",
-      "description": "Secondary group/route connection"
+      "description": "Secondary group/route link"
     },
     {
       "name": "MUX_LINK",
       "datatype": "STRUCT",
-      "description": "Connection from C_MUX"
+      "description": "Link from C_MUX"
     },
     {
-      "name": "O_LINK",
-      "datatype": "STRUCT",
-      "description": "Cross-AS object link"
+      "name": "MAI_INT",
+      "datatype": "DWORD",
+      "description": "Maintenance parameters"
     },
     {
-      "name": "EventTsIn",
-      "datatype": "ANY",
-      "description": "EventTs timestamp interface"
-    },
-    {
-      "name": "ResTimOS",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MaiRTm",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MaiRTh",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MaiCo",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MaiCntSt",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MaiCntTr",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MaiFtDur",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MAI_STA",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MaiCorr",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
-    },
-    {
-      "name": "MaiCyc",
-      "datatype": "ANY",
-      "description": "Maintenance/runtime interfaces"
+      "name": "MAI_REQL",
+      "datatype": "DWORD",
+      "description": "Maintenance parameters"
     }
   ],
   "outputs": [
     {
-      "name": "SP_Out",
-      "datatype": "STRUCT",
-      "description": "Final validated setpoint output"
-    },
-    {
-      "name": "INTFC_OS",
-      "datatype": "ANY",
-      "description": "OS diagnostic interfaces"
-    },
-    {
-      "name": "VISU_OS",
-      "datatype": "ANY",
-      "description": "OS diagnostic interfaces"
-    },
-    {
-      "name": "STATUS",
-      "datatype": "ANY",
-      "description": "OS diagnostic interfaces"
-    },
-    {
-      "name": "STATUS2",
-      "datatype": "ANY",
-      "description": "OS diagnostic interfaces"
-    },
-    {
-      "name": "STATUS3",
-      "datatype": "ANY",
-      "description": "OS diagnostic interfaces"
-    },
-    {
-      "name": "STATUS4",
-      "datatype": "ANY",
-      "description": "OS diagnostic interfaces"
-    },
-    {
-      "name": "ALARM",
-      "datatype": "ANY",
-      "description": "OS diagnostic interfaces"
-    },
-    {
-      "name": "FeatureOut",
-      "datatype": "ANY",
-      "description": "Configuration status outputs"
-    },
-    {
-      "name": "FeatureOut2",
-      "datatype": "ANY",
-      "description": "Configuration status outputs"
-    },
-    {
-      "name": "OS_PermOut",
-      "datatype": "ANY",
-      "description": "Configuration status outputs"
-    },
-    {
-      "name": "OS_PermLog",
-      "datatype": "ANY",
-      "description": "Configuration status outputs"
-    },
-    {
-      "name": "FWCopyMaster",
-      "datatype": "ANY",
-      "description": "Configuration status outputs"
-    },
-    {
-      "name": "FW2CopyMaster",
-      "datatype": "ANY",
-      "description": "Configuration status outputs"
-    },
-    {
-      "name": "OSCopyMaster",
-      "datatype": "ANY",
-      "description": "Configuration status outputs"
-    },
-    {
-      "name": "OpSt_Out",
-      "datatype": "DWORD",
-      "description": "Enabled operator stations for downstream blocks"
-    },
-    {
-      "name": "DelayCon",
-      "datatype": "ANY",
-      "description": "Internal OS/status interfaces"
-    },
-    {
-      "name": "NO_OF_I",
-      "datatype": "ANY",
-      "description": "Internal OS/status interfaces"
-    },
-    {
-      "name": "FT1",
-      "datatype": "ANY",
-      "description": "Internal OS/status interfaces"
-    },
-    {
-      "name": "FT20",
-      "datatype": "ANY",
-      "description": "Internal OS/status interfaces"
+      "name": "EVS",
+      "datatype": "BOOL",
+      "description": "Running signal used as feedback to the group/route and as an interlock"
     },
     {
       "name": "RunSig",
       "datatype": "STRUCT",
-      "description": "Running feedback"
+      "description": "Structured running signal for connection to other blocks' structured interlocks"
     },
     {
-      "name": "DynFlt",
+      "name": "EST",
       "datatype": "BOOL",
       "description": "Dynamic fault indication"
     },
     {
-      "name": "Fault",
+      "name": "SST",
       "datatype": "BOOL",
       "description": "General fault indication"
     },
     {
-      "name": "AckQ",
+      "name": "HORN",
       "datatype": "BOOL",
-      "description": "Internal acknowledgement output"
+      "description": "Startup warning output for horn or lamp"
     },
     {
-      "name": "LaStopRe",
+      "name": "EVSP",
+      "datatype": "BOOL",
+      "description": "Running signal for sporadic drives; typically used as group feedback"
+    },
+    {
+      "name": "SIM_ON",
+      "datatype": "BOOL",
+      "description": "Simulation active output for driver blocks"
+    },
+    {
+      "name": "SP_O",
       "datatype": "STRUCT",
-      "description": "Last stop reason and timestamp"
+      "description": "Validated setpoint output to a VSD or driver block"
     },
     {
-      "name": "WarnAct",
+      "name": "EBE",
       "datatype": "BOOL",
-      "description": "Startup warning output"
+      "description": "Contactor ON command"
     },
     {
-      "name": "RunSigSp",
+      "name": "ELS",
       "datatype": "BOOL",
-      "description": "Running/activated feedback for sporadic drives"
+      "description": "Running/fault lamp output"
     },
     {
-      "name": "SimActQ",
-      "datatype": "BOOL",
-      "description": "Simulation active"
-    },
-    {
-      "name": "AutoAct",
-      "datatype": "BOOL",
-      "description": "Automatic mode active"
-    },
-    {
-      "name": "ManuAct",
-      "datatype": "BOOL",
-      "description": "Manual mode active"
-    },
-    {
-      "name": "LocalAct",
-      "datatype": "BOOL",
-      "description": "Local mode active"
-    },
-    {
-      "name": "OoSAct",
-      "datatype": "BOOL",
-      "description": "Out-of-Service active"
-    },
-    {
-      "name": "PMrel",
-      "datatype": "BOOL",
-      "description": "Power Management enabled output"
-    },
-    {
-      "name": "MaintRQ",
+      "name": "MAI_REQ",
       "datatype": "BOOL",
       "description": "Maintenance request"
     },
     {
-      "name": "MaintAL",
+      "name": "MAI_AL",
       "datatype": "BOOL",
       "description": "Maintenance alarm"
     },
     {
-      "name": "MaiRTm_Q",
-      "datatype": "ANY",
-      "description": "Runtime and maintenance counters"
+      "name": "INTFC_OS",
+      "datatype": "UNKNOWN",
+      "description": "OS/HMI interfaces"
     },
     {
-      "name": "MaiRTh_Q",
-      "datatype": "ANY",
-      "description": "Runtime and maintenance counters"
+      "name": "VISU_OS",
+      "datatype": "UNKNOWN",
+      "description": "OS/HMI interfaces"
     },
     {
-      "name": "MaiCo_Q",
-      "datatype": "ANY",
-      "description": "Runtime and maintenance counters"
+      "name": "STATUS",
+      "datatype": "UNKNOWN",
+      "description": "OS/HMI interfaces"
     },
     {
-      "name": "MaiTr_Q",
-      "datatype": "ANY",
-      "description": "Runtime and maintenance counters"
+      "name": "STATUS2",
+      "datatype": "UNKNOWN",
+      "description": "OS/HMI interfaces"
     },
     {
-      "name": "MaiFt_Q",
-      "datatype": "ANY",
-      "description": "Runtime and maintenance counters"
+      "name": "STATUS3",
+      "datatype": "UNKNOWN",
+      "description": "OS/HMI interfaces"
     },
     {
-      "name": "MaiCyc_Q",
-      "datatype": "ANY",
-      "description": "Runtime and maintenance counters"
+      "name": "ALARM",
+      "datatype": "UNKNOWN",
+      "description": "OS/HMI interfaces"
     },
     {
-      "name": "ContOn",
-      "datatype": "BOOL",
-      "description": "Main contactor ON command"
+      "name": "CURR_OS",
+      "datatype": "INTEGER",
+      "description": "Motor current/power display value"
     },
     {
-      "name": "Lamp",
-      "datatype": "BOOL",
-      "description": "Combined running/fault lamp output"
-    },
-    {
-      "name": "UserOut",
-      "datatype": "BOOL",
-      "description": "One-cycle user pulse output"
-    },
-    {
-      "name": "O_LINKQ",
-      "datatype": "STRUCT",
-      "description": "Object link output for connected slave annunciation, measurement, and process feedback blocks"
-    },
-    {
-      "name": "ST_Worst",
-      "datatype": "BYTE",
-      "description": "Worst signal quality status"
-    },
-    {
-      "name": "ErrorNum",
-      "datatype": "INT",
-      "description": "Engineering/configuration error"
-    },
-    {
-      "name": "MsgAckn1",
-      "datatype": "WORD",
-      "description": "Message acknowledgement status"
-    },
-    {
-      "name": "MsgAckn2",
-      "datatype": "WORD",
-      "description": "Message acknowledgement status"
+      "name": "DLY_CNT",
+      "datatype": "INTEGER",
+      "description": "Delay counter for OS"
     }
   ]
 }
