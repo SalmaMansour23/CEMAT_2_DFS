@@ -2,10 +2,7 @@ The start button and stop button remotely start and stop the motor - via
 automatic/remote command inputs, not local field pushbuttons. Only their
 main output signal is needed.
 
-The sensor output provides a remote safety operating interlock into the motor, not the
-general protection interlock - it should stop the motor when active.
-
-The three inputs (start button, stop button, sensor) are independent -
+The 2 inputs (start button, stop button) are independent -
 none of them connect to each other, only to the motor.
 
 Keep the wiring minimal - only the essential connections for this application.
