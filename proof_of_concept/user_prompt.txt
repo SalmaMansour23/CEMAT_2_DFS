@@ -1,12 +1,11 @@
-Start button's Q output automatically starts the motor. Stop button's Q output automatically stops the
-motor. These are the only signals needed from each button.
+The start button and stop button remotely start and stop the motor - via
+automatic/remote command inputs, not local field pushbuttons. Only their
+main output signal is needed.
 
-Sensor_DI's Q output is a safety interlock into the motor:
-when the digital value's output signal is on, invert it so the motor's
-protection interlock input goes to 0 and the motor trips/stops. Connect it
-to the operating interlock input of the motor.
+The sensor output provides a remote safety operating interlock into the motor, not the
+general protection interlock - it should stop the motor when active.
 
-The three inputs (start button, stop button, Sensor_DI) are independent -
+The three inputs (start button, stop button, sensor) are independent -
 none of them connect to each other, only to the motor.
 
-Do not connect anything else, only the absolutely necessary connections.
+Keep the wiring minimal - only the essential connections for this application.

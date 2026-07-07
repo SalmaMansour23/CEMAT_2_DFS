@@ -1,63 +1,51 @@
 """
-Generalized, multi-block pipeline (no longer hardcoded to C_GROUP + C_DRV_1D):
+Simple 4-step pipeline:
 
-0. The real input is the full raw manual in detailed_markdowns/*.md. For
-   any manual with no matching summary_markdowns/*.md yet, ask Grok to
-   read it and write that structured connection-rule summary (see
-   summarize_detailed_manual) - this only runs once per manual; delete a
-   summary file if you want it regenerated from its source manual.
-1. Discover every block by scanning io_jsons/*.json - each file holds the
-   DEFAULT, standard input/output ports for one Siemens CEMAT block
-   (ground truth for the generic case, not something an LLM has to
-   guess). This default selection is only a subset of every port the
-   real block actually supports - the rest are documented in the
-   block's summary markdown but omitted from the JSON because most
-   projects don't need them.
-1a. If a summary_markdowns/*.md file has no matching io_jsons/*.json at
-    all, one is bootstrapped automatically: Grok reads that summary and
-    synthesizes a standard default ports JSON for it (grounded so it can
-    only use ports the summary documents), saved to io_jsons/ so it
-    behaves like any other pre-existing default file from then on.
-1b. PORT_SELECTION_MODE decides whether to stop at that default subset
-    or go further:
-      - "default": use the io_jsons ports exactly as-is (original
-        behaviour, no extra Grok calls).
-      - "intelligence": also read the block's summary markdown (which
-        documents the FULL port list, not just the default selection)
-        and ask Grok whether this project's connection rules call for
-        adding ports beyond the default set, or dropping default ports
-        that don't apply - producing an adjusted port list that then
-        feeds into every step below exactly like the default one would.
-2. Pair each block with its connection-rule summary: the file in
-   summary_markdowns/ that has the SAME filename stem (e.g.
-   io_jsons/C_GROUP_009.json <-> summary_markdowns/C_GROUP_009.md). Add a
-   new block by dropping a matching pair of files into those two folders.
-3. Only ask Grok about pairs of blocks whose rule summaries actually
-   mention each other (a cheap text pre-filter) - with 10+ blocks this
-   keeps the number of API calls close to the number of REAL
-   relationships instead of blowing up as every-block-vs-every-block.
-4. For each relevant pair, ask Grok to infer connections using both
-   blocks' (possibly intelligence-adjusted) ports + their rules,
-   validate the result against those ports (drop anything hallucinated),
-   and combine everything into one connections list.
-5. Deterministically draw every block in a row (pins straight from the
-   resolved port lists) and wire up every inferred connection, each with
-   its own color, then save block_diagram.png.
+1. Summarize: turn each raw manual in detailed_markdowns/*.md with no
+   matching summary_markdowns/*.md yet into a structured connection-rule
+   summary (see summarize_detailed_manual). Runs once per manual; delete
+   a summary file to regenerate it. Several instances of the exact same
+   underlying block (e.g. one digital input channel reused as a start
+   button, a stop button, and a sensor) share one generic manual, so
+   their summaries end up with identical bodies - only the title/name is
+   instance-specific, derived from the filename, never from the manual.
 
-Step 5 is plain, fixed matplotlib code (not LLM-generated) - an earlier
-attempt at having the model invent both the port layout AND the drawing
-code produced overlapping, unreadable output once blocks had more than a
-handful of pins. Grok's job is limited to the part it's actually good at:
-reading the rules and figuring out which ports connect (and, in
-"intelligence" mode, which ports should even be on the diagram).
+2. Select ports: for each block with no matching io_jsons/*.json yet,
+   read its summary AND the user's own user_prompt.txt description of
+   their application, and ask Grok to cherry-pick the smallest set of
+   real ports this specific project actually needs - each with a short
+   reason (see select_ports_for_block). This is the ONLY port-selection
+   step; there is no separate "default vs intelligence" mode anymore.
+   Runs once per block; delete an io_jsons/*.json file to force
+   re-selection (e.g. after changing user_prompt.txt).
 
-Optional: if a user_prompt.txt file exists next to this script, its text
-is read once and appended to every Grok prompt (port refinement AND
-connection inference) as extra, project-specific guidance - e.g. "this
-project always wires the quick-stop feedback" or any other context the
-manuals don't capture. It never overrides the hallucination-guard rules;
-it's purely extra context to help judgment calls. Leave it missing or
-empty to get the original behaviour.
+3. Infer connections: for every pair of blocks whose summaries mention
+   each other (or every pair, if user_prompt.txt has content), ask Grok
+   to infer the wiring between their selected ports, with a reason per
+   connection (see infer_connections_for_pair). Simple field input
+   devices (pushbuttons, sensors, digital/analog input channels) are
+   handled deterministically, not by prompt rules: they never wire to
+   each other, and only their main output ("Q") ever matters (see
+   is_input_device_block / force_input_device_ports / validate_connections).
+   Whenever a destination gets separate start and stop commands from two
+   different sources, a small AND gate (start AND NOT stop) is always
+   spliced in automatically (see insert_start_stop_interlocks) - this is
+   a fixed rule, not something the model has to remember.
+
+4. Draw: place blocks left-to-right by actual data flow, automatically
+   stacking blocks of the same type that land at the same point in the
+   flow into one column (see compute_layers / automatic_columns) - e.g.
+   several digital input channels used as different buttons/sensors
+   stack together, while a differently-typed block at the same point
+   still gets its own column. An optional layout.json can pin an exact
+   arrangement instead. This step is plain, fixed matplotlib code (not
+   LLM-generated) - Grok's job is limited to reading manuals and
+   figuring out ports/wiring, not inventing the drawing itself.
+
+Optional: if user_prompt.txt exists next to this script, its text is
+read once and used in step 2 (port selection) and step 3 (connection
+inference) as the description of what this specific project needs.
+Leave it missing or empty to get a minimal default selection instead.
 """
 
 import glob
@@ -83,11 +71,10 @@ CONNECTIONS_PATH = "grok_connections.json"
 IMAGE_PATH = "block_diagram.png"
 LAYOUT_PATH = "layout.json"
 
-# Optional free-text file where the person running this pipeline can
-# describe their specific application/project in their own words - e.g.
-# which signals matter most, or context the manuals don't capture - to
-# help Grok make better judgment calls on port selection and connections.
-# Safe to leave missing or empty; everything works exactly as before.
+# Optional free-text file where the person running this pipeline
+# describes their specific application in their own words - used to
+# pick the minimal ports each block needs (step 2) and to help infer
+# connections (step 3). Safe to leave missing or empty.
 USER_PROMPT_PATH = "user_prompt.txt"
 
 # Pacing between Grok calls so many small pairwise requests don't blow
@@ -95,22 +82,14 @@ USER_PROMPT_PATH = "user_prompt.txt"
 # much larger summaries and start seeing rate-limit retries.
 SECONDS_BETWEEN_CALLS = 20
 
-# Port selection mode - change this one flag to switch behaviour for
-# every discovered block:
-#   "default"      - use exactly the ports listed in each io_jsons/*.json
-#                    file. No extra Grok calls, identical to the
-#                    original behaviour.
-#   "intelligence" - additionally consult each block's summary markdown
-#                    (which documents every port the real block
-#                    supports, not just the default selection) and ask
-#                    Grok to add or remove ports so the default set
-#                    better matches what this project's own connection
-#                    rules call for.
-PORT_SELECTION_MODE = "default" 
-
 client = OpenAI(
     api_key=os.environ["GROK_API_KEY"],
     base_url="https://api.groq.com/openai/v1",
+    # Without this, the SDK silently retries a 429 itself (its own sleep,
+    # not ours) before _call_model's rate-limit handling below ever sees
+    # it - so a long wait looks like the script just hanging instead of
+    # printing the clear fail-fast message.
+    max_retries=0,
 )
 
 
@@ -190,10 +169,8 @@ def call_model_text(system_prompt: str, user_prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------
-# Summarization: the real input is the full raw manual in
-# detailed_markdowns/*.md - turn each one with no matching summary yet
-# into the structured connection-rule summary the rest of the pipeline
-# (and, ultimately, another AI reading only that summary) needs.
+# Step 1 - Summarization: turn each raw manual into a structured
+# connection-rule summary the rest of the pipeline needs.
 # ---------------------------------------------------------------------
 
 SUMMARY_SYSTEM_PROMPT = (
@@ -247,6 +224,21 @@ useful. This section is the most important one for inferring wiring later,
 so don't skip real connection statements even if the rest of the summary
 stays brief.
 
+## Similar Signal Disambiguation
+CEMAT blocks often have several pins that sound similar at a glance but
+serve genuinely different situations - e.g. a "remote"-only interlock vs. a
+general-purpose one, or a single-drive start command vs. a group/route-level
+one. For every group of two or more inputs (or two or more outputs) whose
+names or one-line descriptions could be confused for each other, write one
+bullet per signal in that group explaining specifically what distinguishes
+it from the others (remote vs. local, general vs. mode-specific,
+single-device vs. group/route-level, automatic vs. manual, etc.) and one
+concrete example scenario where THIS signal - and not the similar-sounding
+ones - is the correct one to use. Base every distinction ONLY on what the
+manual actually documents about each pin - do not invent a difference it
+doesn't support. If the manual has no groups of similar/overlapping pins,
+write "None".
+
 ## Uncertain / Ambiguous Points
 Anything about the interface or wiring that the manual doesn't state clearly.
 Be honest here rather than guessing.
@@ -264,6 +256,16 @@ RULES:
 
 Block name for this manual: {block_name}
 
+Note: the manual below may refer to itself throughout by a generic
+catalog name (e.g. "CH_DI") - that's expected when the same reusable
+block is instantiated multiple times for different physical devices
+(e.g. one instance wired to a start button, another to a stop button,
+another to a sensor). Always title your summary "# {block_name} Summary"
+using the exact name given above, not whatever generic name the manual
+uses internally - but keep the rest of the summary (Purpose, Inputs,
+Outputs, etc.) describing the block's actual generic function, since
+that part is genuinely the same across every instance of this block.
+
 Manual content follows below (or attached):
 
 {manual}
@@ -273,7 +275,7 @@ Manual content follows below (or attached):
 def block_name_from_stem(stem: str) -> str:
     """Strip a trailing Siemens revision suffix like '_009' off a
     filename stem (C_RelMod_009 -> "C_RelMod") to get the plain block
-    name to hand to Grok."""
+    name for this specific instance."""
     return re.sub(r"_\d+$", "", stem)
 
 
@@ -290,6 +292,20 @@ def summarize_detailed_manual(md_path: str) -> None:
 
     user_prompt = SUMMARY_PROMPT_TEMPLATE.format(block_name=block_name, manual=manual)
     summary = call_model_text(SUMMARY_SYSTEM_PROMPT, user_prompt).strip()
+
+    # Force the title to the filename-derived block_name no matter what
+    # Grok actually wrote - the raw manual for a generic, reusable block
+    # refers to itself by its own generic catalog name throughout, and
+    # Grok sometimes echoes that instead of the specific instance name
+    # it was given, even when told not to. The body text underneath is
+    # expected to stay generic/shared across identical instances - only
+    # the title needs to be instance-specific, since that's what
+    # discover_blocks()/select_ports_for_block rely on.
+    title_line = f"# {block_name} Summary"
+    if re.match(r"^#\s+.+$", summary):
+        summary = re.sub(r"^#\s+.+$", title_line, summary, count=1)
+    else:
+        summary = f"{title_line}\n\n{summary}"
 
     os.makedirs(SUMMARY_MD_DIR, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
@@ -320,7 +336,7 @@ def ensure_all_summaries_exist() -> None:
 
 
 # ---------------------------------------------------------------------
-# Discovery: load every block's JSON + its matching rules summary
+# Shared helpers
 # ---------------------------------------------------------------------
 
 def normalize(s: str) -> str:
@@ -329,10 +345,9 @@ def normalize(s: str) -> str:
 
 def load_user_guidance() -> str:
     """Read USER_PROMPT_PATH if it exists, so the person running this
-    pipeline can add their own free-text notes about this specific
-    application to help guide port selection and connection inference.
-    Returns "" if the file is missing or empty - callers just skip
-    injecting anything in that case, so this is fully optional."""
+    pipeline can describe their specific application in their own
+    words. Returns "" if the file is missing or empty - callers just
+    fall back to a minimal default selection in that case."""
     if not os.path.exists(USER_PROMPT_PATH):
         return ""
     with open(USER_PROMPT_PATH, "r", encoding="utf-8") as f:
@@ -346,10 +361,8 @@ def user_guidance_block(user_guidance: str) -> str:
         return ""
     return f"""
 
-USER-SUPPLIED GUIDANCE FOR THIS SPECIFIC APPLICATION (from the person
-running this pipeline - use it to help judgment calls, but it does NOT
-override the STRICT RULES above: still only use real, literal port names
-from the JSON lists, and only include what those lists actually support):
+USER'S APPLICATION DESCRIPTION (use it to decide what's needed, but
+never invent a port/connection it doesn't actually support):
 \"\"\"
 {user_guidance}
 \"\"\""""
@@ -367,18 +380,13 @@ def connection_rules_excerpt(rules: str) -> str:
     """Trim a full connection-rule summary down to just the sections that
     actually help infer connections between two blocks (Purpose,
     Group/Object Links, Key Connection Notes) - dropping its "Inputs"/
-    "Outputs" sections and "Uncertain / Ambiguous Points". The Inputs/
-    Outputs prose just restates the same port names/types/descriptions
-    already sent verbatim in the JSON port lists alongside this text, so
-    for a block with a large port list (40-90+ ports, now that bootstrap
-    keeps the full list instead of a curated subset) repeating all of it
-    a second time as prose can by itself be enough to blow past Groq's
-    per-request token cap. Falls back to the full text untouched if none
-    of those headers are present, since some hand-written summaries use
-    different section names."""
+    "Outputs" sections and "Uncertain / Ambiguous Points", since the same
+    port names/types/descriptions are already sent verbatim in the JSON
+    port lists alongside this text. Falls back to the full text
+    untouched if none of those headers are present."""
     if not rules:
         return rules
-    keep_headers = ["Purpose", "Group/Object Links", "Key Connection Notes"]
+    keep_headers = ["Purpose", "Group/Object Links", "Key Connection Notes", "Similar Signal Disambiguation"]
     sections = [(h, extract_section(rules, h)) for h in keep_headers]
     excerpt = "\n\n".join(f"## {h}\n{body.strip()}" for h, body in sections if body.strip())
     return excerpt or rules
@@ -386,81 +394,112 @@ def connection_rules_excerpt(rules: str) -> str:
 
 def extract_backticked_names(text: str) -> set:
     """Every `PortName`-style identifier mentioned in a chunk of summary
-    text - used as the "this name is actually documented somewhere, it's
-    not a hallucination" allow-list for both intelligence mode and the
-    bootstrap-a-missing-json step below."""
+    text - the "this name is actually documented somewhere, it's not a
+    hallucination" allow-list used when selecting ports."""
     return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", text))
 
 
-def bootstrap_default_json(md_path: str) -> dict:
-    """A summary markdown was found with no matching io_jsons/*.json file
-    at all - there is no ports JSON for this block yet. Ask Grok to read
-    the summary and extract the FULL, literal port list it documents
-    (not a curated subset - see the note below on why), grounded so it
-    can only use ports the summary actually documents. The result is
-    saved to io_jsons/ so every later run treats it like any other
-    pre-existing default file (this only runs once per new block)."""
+INPUT_DEVICE_KEYWORDS = ("digital input", "analog input", "channel driver", "pushbutton", "push button", "sensor")
+
+
+def is_input_device_block(block: dict) -> bool:
+    """True for a simple field input device (pushbutton, sensor, digital/
+    analog input channel module) - the kind of block whose ONLY relevant
+    port in a basic application is its main output (commonly "Q").
+
+    Prefers the block's stored "is_input_device" flag (set once, with
+    full context - including the summary's own Purpose text, not just
+    Grok's per-instance block_type/description - at selection time, see
+    select_ports_for_block). Falls back to a keyword check against
+    block_type/description for blocks that don't have the flag yet (e.g.
+    hand-authored io_jsons files).
+
+    The stored flag exists because Grok's freely-written block_type/
+    description for a specific instance is NOT reliably consistent even
+    across identical underlying blocks: e.g. one digital input channel
+    used as "StartButton_DI" got a description containing "Digital
+    input", but the SAME manual used as "StopButton_DI" got "Remote stop
+    button for motor control" - no classifying keyword at all - purely
+    because Grok phrased that one call differently. Checking only
+    block_type/description at use-time reproduced that inconsistency
+    every time; the summary's Purpose text is identical across instances
+    of the same block, so classifying from it once is far more reliable."""
+    if "is_input_device" in block:
+        return block["is_input_device"]
+    text = f"{block.get('block_type', '')} {block.get('description', '')}".lower()
+    return any(kw in text for kw in INPUT_DEVICE_KEYWORDS)
+
+
+def force_input_device_ports(block: dict) -> dict:
+    """Deterministically trim a simple field input device down to just
+    its main output ("Q") with no wired inputs at all."""
+    q_port = next((p for p in block["outputs"] if p["name"] == "Q"), None)
+    adjusted = dict(block)
+    adjusted["inputs"] = []
+    adjusted["outputs"] = [q_port] if q_port else block["outputs"]
+    return adjusted
+
+
+# ---------------------------------------------------------------------
+# Step 2 - Port selection: for each block, cherry-pick the smallest set
+# of real ports THIS project actually needs, using the user's own
+# description of their application.
+# ---------------------------------------------------------------------
+
+def select_ports_for_block(md_path: str, user_guidance: str) -> dict:
+    """Read one block's summary and the user's application description,
+    and ask Grok to pick the smallest set of real ports this specific
+    project actually needs, each with a short reason. Saved to
+    io_jsons/*.json so later runs reuse it without another Grok call -
+    delete the file to force re-selection (e.g. after changing
+    user_prompt.txt)."""
     stem = os.path.splitext(os.path.basename(md_path))[0]
     json_path = os.path.join(IO_JSONS_DIR, stem + ".json")
+    block_name = block_name_from_stem(stem)
 
     with open(md_path, "r", encoding="utf-8") as f:
         rules = f.read()
 
-    print(f"No io_jsons file found for summary '{stem}' - asking Grok to bootstrap a default "
-          f"ports JSON for it from the summary (one-time; will be saved to {json_path}).")
+    print(f"No io_jsons file found for '{stem}' - asking Grok to pick this project's ports for it...")
 
-    name_match = re.search(r"#\s+(\S+)\s+Summary", rules)
-    fallback_name = name_match.group(1) if name_match else stem
-
-    # Ground against every backticked name in the WHOLE document, not just
-    # specific "## Inputs"/"## Outputs" sections - different summary files
-    # (hand-written by different ChatGPT sessions) don't always use the
-    # exact same section headings, and if none of them match, section-only
-    # extraction returns an empty allow-list and silently drops every
-    # single proposed port. Matching against the full text is more robust
-    # and still blocks outright invented names.
     allowed_names = extract_backticked_names(rules)
 
-    system_prompt = (
-        "You are a careful industrial automation engineering assistant. "
-        "Output only valid JSON."
-    )
-
+    system_prompt = "You are a careful industrial automation engineer. Output only valid JSON."
     user_prompt = f"""
-There is no ports JSON for this Siemens CEMAT block yet - only its
-connection-rule summary markdown exists, shown in full below. Extract
-EVERY port documented in the summary into a complete, literal port
-list - every bullet in its "Inputs" and "Outputs" sections, plus any
-port mentioned in a "Group/Object Links" section that isn't already
-listed there. Do NOT curate, filter, or leave any of them out, even
-ones that look like internal/OS/diagnostic-only ports - this JSON is
-later used to check whether a proposed connection's port name is real,
-so leaving a real, documented port out of this list would make a
-genuine, correctly-documented connection get wrongly rejected later
-just because it never made it into this file. Skip a port only if the
-summary's own "Uncertain / Ambiguous Points" section says its exact
-name is unclear or unconfirmed.
+Block: {block_name}
 
-STRICT RULES:
-- Every port name you output MUST literally appear (the summary wraps
-  port names in backticks like `ExamplePort`, but the JSON "name" value
-  you output must be the bare name with NO backticks around it, e.g.
-  "ExamplePort" not "`ExamplePort`") somewhere in the summary text below.
-  Never invent, rename, or guess a name.
-- Output a real "block_type" and one-sentence "description" based on the
-  summary's "Purpose" section.
+Below is this block's connection-rule summary, followed by the user's
+own description of what they're building.
 
-Output only valid JSON in exactly this shape:
+Pick the smallest set of real ports (inputs and outputs) this specific
+project actually needs - as few as possible. For each port, give a
+one-sentence reason tied to the user's description. If the user's
+description gives a literal configured value for an input (a setpoint,
+alarm limit, etc.), include it as "value".
+
+Rules:
+- Only use port names that appear in the summary below. Never invent one.
+- If the user gave no relevant description for this block, pick the
+  minimal set needed for basic start/stop/run operation only.
+
+"block_type" should be the general CATEGORY of block (e.g. "Digital
+Input Channel", "Analog Measurement", "Motor Drive"), not this
+instance's name - two different instances of the same underlying block
+should get the same block_type.
+
+Output only this JSON shape:
 {{
-  "block_name": "...",
   "block_type": "...",
   "description": "...",
-  "inputs": [{{"name": "...", "datatype": "...", "description": "..."}}],
-  "outputs": [{{"name": "...", "datatype": "...", "description": "..."}}]
+  "inputs": [{{"name": "...", "datatype": "...", "description": "...", "reason": "...", "value": "..."}}],
+  "outputs": [{{"name": "...", "datatype": "...", "description": "...", "reason": "..."}}]
 }}
 
-=== Summary markdown ({stem}) ===
+=== {block_name} summary ===
 {rules}
+
+=== User's application description ===
+{user_guidance or "(none given - pick the minimal standard set for basic operation)"}
 """.strip()
 
     result = call_model_json(system_prompt, user_prompt)
@@ -468,54 +507,63 @@ Output only valid JSON in exactly this shape:
     def sanitize(ports: list) -> list:
         kept = []
         for p in ports:
-            # Strip stray backticks/whitespace the model sometimes copies
-            # in from the summary's `Markdown` styling - without this, a
-            # single formatting slip makes every name fail the allow-list
-            # check and silently empties the whole port list.
-            name = (p.get("name") or "").strip().strip("`").strip()
+            name = (p.get("name") or "").strip().strip("`")
             if name in allowed_names:
-                kept.append({
-                    "name": name,
-                    "datatype": p.get("datatype", "?"),
-                    "description": p.get("description", ""),
-                })
+                kept.append(p)
             else:
-                print(f"  Dropping bootstrapped port '{name}' for {stem} - not documented "
-                      f"anywhere in its summary.")
+                print(f"  Dropping '{name}' for {block_name} - not a real port in its summary.")
         return kept
 
+    inputs = sanitize(result.get("inputs", []))
+    outputs = sanitize(result.get("outputs", []))
+
     block = {
-        # Always use the name parsed straight out of the summary's own
-        # "# <Name> Summary" header rather than whatever Grok echoes back
-        # for "block_name" - the prompt below embeds the file stem (which
-        # includes the trailing "_009"-style version suffix) as a label,
-        # and Grok sometimes copies that suffix into its own answer,
-        # producing a block name like "C_MEAS_I_009" instead of the real
-        # logical name "C_MEAS_I". That mismatch breaks every later
-        # name-based lookup (candidate pairing, user-guidance matching).
-        "block_name": fallback_name,
+        "block_name": block_name,
         "block_type": result.get("block_type", "Unknown"),
         "description": result.get("description", ""),
-        "inputs": sanitize(result.get("inputs", [])),
-        "outputs": sanitize(result.get("outputs", [])),
+        "inputs": [{"name": p["name"], "datatype": p.get("datatype", "?"),
+                    "description": p.get("description", ""), "reason": p.get("reason", "")}
+                   for p in inputs],
+        "outputs": [{"name": p["name"], "datatype": p.get("datatype", "?"),
+                     "description": p.get("description", ""), "reason": p.get("reason", "")}
+                    for p in outputs],
     }
+
+    port_values = {p["name"]: str(p["value"]) for p in inputs if p.get("value")}
+    if port_values:
+        block["port_values"] = port_values
+
+    # Classify from block_type/description ONLY - not the summary's full
+    # Purpose text. Purpose text was tried as an extra signal, but it
+    # describes what a block INTERFACES WITH, not what it IS: C_DRV_1D's
+    # own Purpose text mentions "local operation via field pushbuttons",
+    # which falsely classified the motor drive itself as an input device
+    # and wiped out its whole input list. The prompt above now explicitly
+    # asks Grok for a real category name (not the instance name) in
+    # block_type, which is a much cleaner signal on its own.
+    classification_text = f"{block['block_type']} {block['description']}".lower()
+    block["is_input_device"] = any(kw in classification_text for kw in INPUT_DEVICE_KEYWORDS)
+
+    if block["is_input_device"]:
+        block = force_input_device_ports(block)
+        print(f"  {block_name} is a simple input device - trimmed to just its Q output.")
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(block, f, indent=2, ensure_ascii=False)
-    print(f"  Saved bootstrapped default ports JSON to {json_path}")
+    print(f"  Saved {block_name}'s selected ports to {json_path}")
 
     return block
 
 
-def discover_blocks() -> dict:
+def discover_blocks(user_guidance: str = "") -> dict:
     """Load every *.json in io_jsons/, and pair each with the summary .md
     in summary_markdowns/ that best matches its filename: prefer an exact
     same-stem match (C_GROUP_009.json <-> C_GROUP_009.md); fall back to
     the block's "block_name" field appearing in the summary's filename.
 
-    Any summary .md left over with no matching json at all gets a
-    default ports JSON bootstrapped for it (see bootstrap_default_json)
-    so it can be discovered and connected just like every other block."""
+    Any summary .md left over with no matching json at all gets its
+    ports selected for this project (see select_ports_for_block) so it
+    can be discovered and connected just like every other block."""
     md_paths = glob.glob(os.path.join(SUMMARY_MD_DIR, "*.md"))
     blocks = {}
     claimed_md_paths = set()
@@ -548,10 +596,10 @@ def discover_blocks() -> dict:
     for md_path in sorted(md_paths):
         if md_path in claimed_md_paths:
             continue
-        block = bootstrap_default_json(md_path)
+        block = select_ports_for_block(md_path, user_guidance)
         name = block["block_name"]
         if name in blocks:
-            print(f"Warning: bootstrapped block_name '{name}' (from {md_path}) already discovered - skipping.")
+            print(f"Warning: block_name '{name}' (from {md_path}) already discovered - skipping.")
             continue
         json_path = os.path.join(IO_JSONS_DIR, os.path.splitext(os.path.basename(md_path))[0] + ".json")
         with open(md_path, "r", encoding="utf-8") as f:
@@ -563,240 +611,29 @@ def discover_blocks() -> dict:
 
 
 # ---------------------------------------------------------------------
-# Port selection mode: "default" keeps the io_jsons ports untouched;
-# "intelligence" asks Grok to widen/narrow that default set using each
-# block's own summary markdown, which documents the full port list.
-# ---------------------------------------------------------------------
-
-def refine_ports_intelligently(block: dict, rules: str, user_guidance: str = "") -> dict:
-    """"intelligence" mode only: the io_jsons file is just Siemens'
-    DEFAULT port selection, not the full set the real block supports.
-    The summary markdown documents the full set. Ask Grok, using that
-    summary's own Purpose/Key Connection Notes as the specification of
-    what a real integration needs, whether any ports should be added on
-    top of the default set or removed from it. Returns a new block dict
-    with adjusted "inputs"/"outputs"; falls back to the default block
-    untouched if there is no summary to reason from."""
-    if not rules.strip():
-        return block
-
-    allowed_names = (
-        extract_backticked_names(extract_section(rules, "Inputs"))
-        | extract_backticked_names(extract_section(rules, "Outputs"))
-        | extract_backticked_names(extract_section(rules, "Group/Object Links"))
-    )
-
-    system_prompt = (
-        "You are a careful industrial automation engineering assistant. "
-        "Output only valid JSON."
-    )
-
-    user_prompt = f"""
-The JSON below is the DEFAULT selection of input/output ports for the
-Siemens CEMAT block {block['block_name']} - the generic subset most
-projects use. It is not the full list of ports this block actually
-supports; it is a starting point.
-
-The markdown after it is that block's connection-rule summary, which
-documents the FULL port list this block supports (see its own "Inputs"
-and "Outputs" sections) as well as its "Purpose" and "Key Connection
-Notes" - treat those two sections as the specification of what a real
-integration of this block actually needs.
-
-Your task: decide whether the DEFAULT port list should be adjusted for
-this project:
-- ADD a port that is documented in the summary's "Inputs"/"Outputs"/
-  "Group/Object Links" sections but missing from the default list, ONLY
-  if the "Purpose" or "Key Connection Notes" text gives a concrete
-  reason a real integration would need to wire it (e.g. it names that
-  port directly as part of how this block connects to others).
-- REMOVE a default port only if the summary text makes clear it is not
-  applicable to a normal/simple integration (this should be rare).
-- Otherwise, leave the port exactly as in the default list.
-
-STRICT RULES:
-- Every port name you output MUST literally appear (the summary wraps
-  port names in backticks like `ExamplePort`, but the JSON "name" value
-  you output must be the bare name with NO backticks around it, e.g.
-  "ExamplePort" not "`ExamplePort`") in the summary text below. Never
-  invent, rename, or guess a name.
-- Do not add a port "just because it's documented" - only add it if the
-  Purpose/Key Connection Notes text gives a real, concrete reason.
-- When in doubt, prefer the default list unchanged - being conservative
-  here is better than guessing.
-- Keep every port's "datatype" and a short "description" (reuse the
-  summary's wording where possible).
-
-Output only valid JSON in exactly this shape (the full, final port
-lists - not just the changes):
-{{
-  "inputs": [{{"name": "...", "datatype": "...", "description": "..."}}],
-  "outputs": [{{"name": "...", "datatype": "...", "description": "..."}}]
-}}
-
-=== {block['block_name']} DEFAULT ports (JSON) ===
-{json.dumps({"inputs": block["inputs"], "outputs": block["outputs"]}, indent=2)}
-
-=== {block['block_name']} connection rules (full summary) ===
-{rules}
-{user_guidance_block(user_guidance)}
-""".strip()
-
-    result = call_model_json(system_prompt, user_prompt)
-
-    def sanitize(proposed: list, default_ports: list) -> list:
-        default_names = {p["name"] for p in default_ports}
-        kept = []
-        for p in proposed:
-            name = (p.get("name") or "").strip().strip("`").strip()
-            if name in default_names or name in allowed_names:
-                kept.append({
-                    "name": name,
-                    "datatype": p.get("datatype", "?"),
-                    "description": p.get("description", ""),
-                })
-            else:
-                print(f"  Intelligence mode: dropping proposed port '{name}' for "
-                      f"{block['block_name']} - not documented anywhere in its summary.")
-        return kept
-
-    new_inputs = sanitize(result.get("inputs", block["inputs"]), block["inputs"])
-    new_outputs = sanitize(result.get("outputs", block["outputs"]), block["outputs"])
-
-    added_in = {p["name"] for p in new_inputs} - {p["name"] for p in block["inputs"]}
-    removed_in = {p["name"] for p in block["inputs"]} - {p["name"] for p in new_inputs}
-    added_out = {p["name"] for p in new_outputs} - {p["name"] for p in block["outputs"]}
-    removed_out = {p["name"] for p in block["outputs"]} - {p["name"] for p in new_outputs}
-    if added_in or removed_in or added_out or removed_out:
-        print(f"  Intelligence mode adjusted {block['block_name']}: "
-              f"+in{sorted(added_in)} -in{sorted(removed_in)} "
-              f"+out{sorted(added_out)} -out{sorted(removed_out)}")
-    else:
-        print(f"  Intelligence mode: default ports already sufficient for {block['block_name']}.")
-
-    adjusted = dict(block)
-    adjusted["inputs"] = new_inputs or block["inputs"]
-    adjusted["outputs"] = new_outputs or block["outputs"]
-    return adjusted
-
-
-def apply_port_selection_mode(blocks: dict, user_guidance: str = "") -> None:
-    """Mutates each discovered block's port list in place according to
-    PORT_SELECTION_MODE. No-op (and no extra Grok calls) in "default"
-    mode, which keeps the original, pre-existing behaviour."""
-    if PORT_SELECTION_MODE != "intelligence":
-        return
-
-    names = list(blocks)
-    for i, name in enumerate(names, start=1):
-        info = blocks[name]
-        if not info["rules"].strip():
-            continue
-        print(f"[{i}/{len(names)}] Intelligence mode: reviewing default ports for {name}...")
-        info["block"] = refine_ports_intelligently(info["block"], info["rules"], user_guidance)
-        if i < len(names):
-            time.sleep(SECONDS_BETWEEN_CALLS)
-
-
-def assign_port_values(block: dict, user_guidance: str) -> dict:
-    """If user_guidance specifies a literal configured value for any of
-    this block's input ports (e.g. "HHA 90" for a high-high alarm limit
-    input), ask Grok to map that onto the real port name so it can be
-    shown next to its pin in the diagram - like a real engineering
-    parameter sheet - instead of only being usable as prose context for
-    connection inference. Returns {} (no extra Grok call, no values) if
-    user_guidance is empty; never invents a value the user didn't
-    actually specify."""
-    if not user_guidance.strip():
-        return {}
-
-    input_names = [p["name"] for p in block["inputs"]]
-    if not input_names:
-        return {}
-
-    system_prompt = (
-        "You are a careful industrial automation engineering assistant. "
-        "Output only valid JSON."
-    )
-    user_prompt = f"""
-The person running this pipeline wrote the following free-text guidance
-about their specific project:
-\"\"\"
-{user_guidance}
-\"\"\"
-
-Below is the real input port list for one Siemens CEMAT block,
-{block['block_name']}. Does the guidance above specify a literal
-configured value (a setpoint, alarm limit, range boundary, etc.) for
-any of these specific input ports? If so, map each one to that value as
-a short display string (e.g. "90", "0.0", "100").
-
-STRICT RULES:
-- Only include a port if the guidance clearly gives a value for it -
-  match by MEANING (e.g. "high-high alarm" -> whichever port here is
-  documented/named as the high-high limit), not by requiring the user
-  to type the exact port name.
-- Do NOT invent or guess a value for any port the guidance doesn't
-  actually specify - an empty mapping is the correct answer if the
-  guidance doesn't cover this block at all.
-- Only use port names that literally appear in the list below.
-
-=== {block['block_name']} inputs ===
-{json.dumps(input_names, indent=2)}
-
-Output only valid JSON in exactly this shape:
-{{"port_values": {{"PortName": "value"}}}}
-""".strip()
-
-    result = call_model_json(system_prompt, user_prompt)
-    values = result.get("port_values", {}) or {}
-    return {name: str(value) for name, value in values.items() if name in input_names}
-
-
-def assign_all_port_values(blocks: dict, user_guidance: str) -> None:
-    """Mutates each discovered block in place, adding a "port_values"
-    dict for any input ports user_guidance specifies literal values for
-    (see assign_port_values), and saves it back to that block's
-    io_jsons/*.json so redraw.py (and any later run) sees it without
-    another Grok call. No-op (and no extra Grok calls at all) if
-    user_guidance is empty."""
-    if not user_guidance.strip():
-        return
-
-    names = list(blocks)
-    for i, name in enumerate(names, start=1):
-        info = blocks[name]
-        print(f"[{i}/{len(names)}] Checking user guidance for configured port values on {name}...")
-        values = assign_port_values(info["block"], user_guidance)
-        if values:
-            info["block"]["port_values"] = values
-            with open(info["json_path"], "w", encoding="utf-8") as f:
-                json.dump(info["block"], f, indent=2, ensure_ascii=False)
-            print(f"  Set port value(s) for {name}: {values} (saved to {info['json_path']})")
-        if i < len(names):
-            time.sleep(SECONDS_BETWEEN_CALLS)
-
-
-# ---------------------------------------------------------------------
-# Candidate pairs: only ask Grok about pairs whose rules actually
-# mention each other, so N blocks doesn't mean N^2 API calls in practice
+# Step 3 - Connection inference: only ask Grok about pairs whose rules
+# actually mention each other (or every pair, if user_prompt.txt has
+# content), so N blocks doesn't mean N^2 API calls in practice.
 # ---------------------------------------------------------------------
 
 def candidate_pairs(blocks: dict, user_guidance: str = "") -> list:
     names = list(blocks)
     all_pairs = list(itertools.combinations(names, 2))
 
+    # Two independent field input devices never wire directly to each
+    # other - each is independent and feeds a downstream consumer, not
+    # another input device. Hard, deterministic exclusion (also saves
+    # tokens) rather than relying on the model to remember this.
+    all_pairs = [
+        (a, b) for a, b in all_pairs
+        if not (is_input_device_block(blocks[a]["block"]) and is_input_device_block(blocks[b]["block"]))
+    ]
+
     if user_guidance.strip():
         # The user has given freeform guidance about how they want things
         # connected. We can't reliably tell which specific block pair
-        # loose, possibly-imperfect text is about - they may abbreviate,
-        # paraphrase, or not name a block exactly as its file is named -
-        # so trying to pattern-match guidance text against block names
-        # would just recreate the same rigid-matching problem. Instead,
-        # when guidance is present, check every pair and let Grok itself
-        # weigh the guidance (it already sees the real port lists too,
-        # so it won't invent a connection between unrelated blocks just
-        # because guidance exists).
+        # loose, possibly-imperfect text is about, so when guidance is
+        # present, check every remaining pair and let Grok weigh it.
         return all_pairs
 
     pairs = []
@@ -808,179 +645,42 @@ def candidate_pairs(blocks: dict, user_guidance: str = "") -> list:
     return pairs
 
 
-# ---------------------------------------------------------------------
-# Connection inference (same approach as the original 2-block version,
-# now parameterized so it works for any pair of discovered blocks)
-# ---------------------------------------------------------------------
-
 def infer_connections_for_pair(block_a: dict, rules_a: str, block_b: dict, rules_b: str, user_guidance: str = "") -> dict:
     name_a, name_b = block_a["block_name"], block_b["block_name"]
     rules_a = connection_rules_excerpt(rules_a)
     rules_b = connection_rules_excerpt(rules_b)
 
-    system_prompt = (
-        "You are a careful industrial automation engineering assistant. "
-        "Output only valid JSON."
-    )
+    system_prompt = "You are a careful industrial automation engineer. Output only valid JSON."
 
     user_prompt = f"""
-Below are the REAL, standard input/output ports for two Siemens CEMAT
-blocks, {name_a} and {name_b}, as JSON, followed by their connection-rule
-summaries (one may be empty if no summary file was found for that block).
+Below are the real input/output ports for two Siemens CEMAT blocks,
+{name_a} and {name_b}, as JSON, followed by their connection-rule
+summaries.
 
-Your task: infer the connections between {name_a} and {name_b} - in
-EITHER direction (an output of either block can feed an input of the
-other).
+Infer the connections between {name_a} and {name_b} - in either
+direction (an output of either block can feed an input of the other).
 
 STRICT RULES:
-- Only use port names that literally appear in the JSON port lists
-  below. Do not invent, rename, or guess a port name.
-- Every connection's "from_port" must be a port listed in from_block's
-  "outputs", and "to_port" must be a port listed in to_block's "inputs".
-- Only include a connection in "connections" if the rule summaries
-  and/or the user-supplied guidance (see the "USER-SUPPLIED GUIDANCE"
-  section near the end, if present) clearly support it. The user's own
-  guidance is a legitimate, standalone basis for including a connection
-  even if the official summaries don't spell it out - the user knows
-  their own application and may describe a real relationship the
-  summaries never document. If you think a connection likely exists but
-  neither the summaries nor the user guidance clearly support both ends,
-  put it under "uncertain_connections" instead, with a short note on
-  what's missing.
-- Do not invent a connection just to look complete.
-- Go through EVERY bullet point in the "Key Connection Notes" section of
-  BOTH summaries one by one and check it against the port lists - do not
-  stop after finding the first few obvious matches. Missing a documented
-  rule is as bad as inventing a fake one.
-
-MINIMAL, ESSENTIAL WIRING ONLY:
-- Only wire the small set of signals genuinely needed for the described
-  application to work correctly - e.g. start/stop commands, run
-  feedback, the core process value, and safety interlocks. Do NOT wire
-  diagnostic, simulation, mode-selection (e.g. a digital input module's
-  MODE port), OS/HMI, maintenance, or status-only signals just because
-  matching ports happen to exist on both sides - a real, working
-  default engineering setup does not connect everything it technically
-  could.
-- Before including a connection, ask: would the system fail to perform
-  its basic described function without this wire? If not, leave it out
-  even if it's technically a valid, documented connection somewhere.
-  Prefer a small, clean set of connections over an exhaustive one.
-- PUSHBUTTON / DIGITAL INPUT MODULES: for a simple pushbutton or digital
-  input module (block_type/description says "digital input" or
-  "pushbutton"), the ONLY port that ever matters for wiring is its main
-  boolean output (typically named "Q"). Never wire its MODE, VALUE,
-  QBAD, QLAST, QMOD_ERR, SIM_*, SUBS_*, LAST_ON, QUALITY, or any other
-  port to anything - these are internal/diagnostic, not part of a basic
-  application, no matter how plausible a reason sounds.
-- INDEPENDENT INPUT DEVICES NEVER WIRE TO EACH OTHER: two different
-  input-type blocks (pushbuttons, sensors, digital/analog input
-  modules) are never connected directly to one another - each is
-  independent and feeds the same downstream consumer (e.g. a drive),
-  not each other. If both name_a and name_b are input-type devices with
-  no other block between them in this pair, do not invent a connection
-  between them; this holds even if a summary or guidance text seems to
-  loosely suggest a relationship - a real one always exists.
-
-GROUP <-> COMPONENT LINK CONNECTION IS MANDATORY - NEVER SKIP, NEVER UNCERTAIN:
-- FIRST check the precondition: this rule only applies when one of these
-  two blocks is actually a supervisory "group"/"route" block (its own
-  block_type, description, or Purpose section identifies it as a group,
-  route, or master coordinating other objects) and the other is a
-  member/component of that specific group/route. If neither block is a
-  group/route supervisor - e.g. both are peer field-device blocks such
-  as a drive and a measurement/annunciation/process-feedback block -
-  this rule does NOT apply, even if both port lists happen to contain
-  "LINK" in some port name. Sharing the substring "LINK" is not, by
-  itself, evidence of a group/component relationship: most CEMAT blocks
-  have some kind of *LINK* port for unrelated purposes (e.g. joining a
-  totally different group, or being a slave object of a third block), so
-  do not force a connection here without first confirming one side is
-  genuinely the group/route being joined.
-- Once (and only once) that precondition is confirmed: CEMAT ALWAYS
-  physically wires the group to that component through a dedicated link
-  interface - the exact name varies per block (G_LINK, GR_LINK1,
-  GR_LINK2, O_LINK, O_LINKQ, MUX_LINK, R_LINK, ...) so use whatever the
-  port lists actually call it, do not assume it must be named exactly
-  "G_LINK"/"GR_LINK1".
-- Concretely, once the precondition holds: scan both port lists for any
-  output whose name contains "LINK" and any input whose name contains
-  "LINK". If you find a plausible pair (one block's "*LINK*" output and
-  the other's "*LINK*" input), you MUST output that connection in
-  "connections" with confidence >= 0.95, even if the summary's prose
-  doesn't spell it out in so many words - the port names themselves are
-  the evidence. This is true for a normal, single-instance setup even
-  when the manual also discusses other configurations (multiple
-  groups/routes, multiplexers) that don't apply here.
-- CRITICAL - GETTING THE DIRECTION RIGHT: the "*LINK*" port name that
-  contains "LINK" can legitimately appear on EITHER side as an input
-  in one block and as an output in the other - do not assume which
-  block is the source just because it "feels" like the group should
-  send it or a component should send it. You must check literally:
-  1. Look at BlockA's "outputs" list and BlockB's "outputs" list - find
-     which one of the two actually contains a "*LINK*" entry in its
-     OWN "outputs" array (not inputs).
-  2. Look at the OTHER block's "inputs" list - confirm it contains a
-     matching "*LINK*" entry in its OWN "inputs" array (not outputs).
-  3. The block whose "outputs" array literally contains the "*LINK*"
-     port is "from_block"/"from_port". The block whose "inputs" array
-     literally contains the matching "*LINK*" port is "to_block"/
-     "to_port". Never reverse this - a port that is listed under a
-     block's "inputs" can NEVER be that block's "from_port", and a
-     port listed under a block's "outputs" can NEVER be that block's
-     "to_port".
-  4. Before finalizing this connection, re-check both port lists one
-     more time to confirm from_port truly sits in from_block's
-     "outputs" and to_port truly sits in to_block's "inputs" - if it
-     is reversed, swap from_block/from_port with to_block/to_port.
-- Do NOT push this into "uncertain_connections" and do NOT leave it out
-  entirely. A missing group/component link is one of the most serious
-  errors possible here, since it is what physically attaches the
-  component to its group - treat finding it as mandatory, not a bonus.
-
-GROUP <-> COMPONENT RUN/STOP FEEDBACK IS EXPECTED, NOT OPTIONAL:
-- A supervisory group almost always needs to know when its member
-  objects are actually running/stopped. If the group side has
-  feedback-style inputs for this (commonly named like FbObjOn/FbObjOff,
-  or described as "feedback that objects are running/stopped") AND the
-  component side has a running/stopped-style output (commonly named
-  like RunSig/OffSig, or similarly described), connect them:
-  - the component's "running" output -> the group's "on/running"
-    feedback input, direct ("inverted": false).
-  - the same output, negated, -> the group's "off/stopped" feedback
-    input ("inverted": true) - UNLESS the component separately exposes
-    its own explicit "stopped" output, in which case connect that
-    directly instead.
-  Only skip this pair if the relevant ports genuinely don't exist in
-  either block's port list - do not skip it just because the summary
-  text is thin on the subject; the existence of matching port names on
-  both sides is itself strong evidence this connection is real.
-
-SAFETY INTERLOCK FROM ALARM / LIMIT-EXCEEDED OUTPUTS:
-- If one block exposes an alarm/limit-exceeded-style output (e.g. a
-  high-high, high, low, or low-low limit output, or any output whose
-  name or description signals an abnormal condition) and the other
-  block has an interlock/protection/stop-style input (e.g. IntStop,
-  IntProtG, IntProtA, or similarly described), and the summaries or the
-  user's guidance describe this kind of protective relationship between
-  them, connect the alarm output to that interlock/stop input so the
-  abnormal condition actually stops or blocks the second block. This is
-  a real safety-wiring pattern (e.g. an over-temperature reading
-  tripping a motor), not just a nice-to-have - include it under the same
-  "essential wiring" standard as start/stop/run feedback above.
-
-WATCH FOR INVERTED / SPLIT SIGNALS:
-- Sometimes one output feeds two different input ports on the other
-  block - one directly, and one logically inverted (NOT'd). Look for
-  language like "negated", "inverted", or a description of one port as
-  the logical opposite of another (e.g. a running signal commonly feeds
-  both a "running" feedback directly AND a "stopped"/"off" feedback as
-  its negation). When you find this pattern, output BOTH connections
-  separately, each with its own "inverted" field:
-  - the direct connection: "inverted": false
-  - the negated connection: "inverted": true
-  The same "from_port" CAN appear in more than one connection (fan-out)
-  when the manual supports it.
+- Only use port names that literally appear in the JSON lists below. Never invent one.
+- Only include a connection if the summaries or the user's own guidance clearly support it -
+  if unsure, put it under "uncertain_connections" instead of guessing.
+- Wire only what's needed for the application the user described - skip diagnostic,
+  simulation, or status-only signals unless the user specifically needs them.
+- GROUP <-> COMPONENT LINK: if one block is a supervisory group/route and the other is its
+  member, they always share a dedicated link port pair (name varies: G_LINK, GR_LINK1,
+  O_LINK, etc. - whatever the port lists actually call it). Find it and wire it in the
+  correct direction: whichever block's OWN "outputs" list contains the link port is the source.
+- GROUP <-> COMPONENT FEEDBACK: a group also usually needs run/stop feedback from its members
+  (e.g. a drive's running output feeding the group's running-feedback input, and its negation
+  feeding the stopped-feedback input) - wire it if matching ports exist.
+- ALARM -> INTERLOCK: if one block has an alarm/limit output and the other has an
+  interlock/protection input, and the guidance describes this kind of safety relationship,
+  wire the alarm into the interlock.
+- SIMILAR SIGNALS: if a summary's "Similar Signal Disambiguation" section lists several
+  similar-purpose ports, pick the one matching what the user actually described, not the
+  most generic-sounding one.
+- Mark a connection "inverted": true if the signal must be logically negated before
+  reaching its destination.
 
 Output only valid JSON in exactly this shape:
 {{
@@ -990,7 +690,7 @@ Output only valid JSON in exactly this shape:
       "from_port": "...",
       "to_block": "{name_b}",
       "to_port": "...",
-      "reason": "short reason citing the rule",
+      "reason": "short reason",
       "confidence": 0.0,
       "inverted": false
     }}
@@ -1018,7 +718,7 @@ Output only valid JSON in exactly this shape:
 def validate_connections(connections: list, blocks_by_name: dict) -> list:
     """Drop any connection that references a block/port not actually
     present in the JSON files (belt-and-suspenders check against
-    hallucination)."""
+    hallucination), plus the deterministic input-device rules."""
 
     def has_output(block_name, port_name):
         if block_name not in blocks_by_name:
@@ -1035,14 +735,24 @@ def validate_connections(connections: list, blocks_by_name: dict) -> list:
         from_block, from_port = c.get("from_block"), c.get("from_port")
         to_block, to_port = c.get("to_block"), c.get("to_port")
 
+        # Deterministic guarantee for simple field input devices: only
+        # their main output ("Q") ever matters, and they never receive a
+        # wired input at all.
+        if to_block in blocks_by_name and is_input_device_block(blocks_by_name[to_block]):
+            print(f"  Dropping connection - input device {to_block} never receives a wired input: {c}")
+            continue
+        if (from_block in blocks_by_name and is_input_device_block(blocks_by_name[from_block])
+                and from_port != "Q"):
+            print(f"  Dropping connection - input device {from_block} only ever uses its Q output: {c}")
+            continue
+
         if has_output(from_block, from_port) and has_input(to_block, to_port):
             valid.append(c)
             continue
 
         # The model occasionally reports a real connection with the
-        # direction reversed (e.g. swaps a group's LINK output with a
-        # component's LINK input). If flipping from/to makes both ends
-        # check out against the real port lists, auto-correct instead of
+        # direction reversed. If flipping from/to makes both ends check
+        # out against the real port lists, auto-correct instead of
         # silently dropping a connection that actually exists.
         if has_output(to_block, to_port) and has_input(from_block, from_port):
             swapped = dict(c)
@@ -1071,27 +781,41 @@ def insert_start_stop_interlocks(connections: list, blocks_by_name: dict) -> tup
     block gets its start-type command from one source block and its
     stop-type command from a DIFFERENT source block - the classic
     separate start/stop pushbutton setup - splice in a small synthetic
-    AND gate between them (start signal AND NOT stop signal) instead of
-    wiring both buttons straight into the destination. This stops the
-    destination from ever seeing a contradictory "start AND stop both
-    pressed" state as a bare start command.
+    AND gate between them (start signal AND NOT stop signal), which
+    becomes the ONLY path for the start command (so it's never live
+    without the gate's protection).
 
-    A destination port counts as "start-type"/"stop-type" if either its
-    bare name (e.g. StartLoc/StopLoc) OR its documented description
-    (e.g. an abbreviated port like "ESR" described as "Local start
-    pushbutton") matches START_PORT_RE/STOP_PORT_RE - matching on name
-    alone isn't enough, since different Siemens manuals abbreviate these
-    ports very differently and the description is often the only place
-    the actual meaning ("start"/"stop") is spelled out in English.
+    The stop command is different: it still ALSO feeds the gate
+    (inverted, as the safety check against a simultaneous start), but
+    its own DIRECT connection to the destination is left in place rather
+    than being consumed by the gate - the stop signal doesn't need the
+    gate's protection to reach its destination, only the start signal
+    does.
+
+    A destination port counts as "start-type"/"stop-type" if its bare
+    name, its documented description, OR the connection's own "reason"
+    (written by Grok specifically about that connection) matches
+    START_PORT_RE/STOP_PORT_RE. The reason is included because an
+    abbreviated port's own description often doesn't literally say
+    "start"/"stop" at all (e.g. a port described only as "Automatic ON
+    command"), even though the connection reasoning about it does (e.g.
+    "Remote start command") - relying on the static port description
+    alone missed exactly this case.
+
+    "single-start" is stripped before matching - it describes an
+    OPERATING MODE ("automatic and single-start modes"), not a
+    start-command port, and a bare substring match on "start" would
+    otherwise mistake that mode qualifier for an actual start port.
 
     Returns (new_connections, new_gate_blocks) - gate blocks are
     synthetic (not loaded from any file) and only exist for this
     diagram; add them to the block list handed to draw_diagram."""
 
-    def port_search_text(block_name, port_name):
+    def port_search_text(block_name, port_name, connection):
         block = blocks_by_name.get(block_name, {})
         match = next((p for p in block.get("inputs", []) if p["name"] == port_name), None)
-        return f"{port_name} {(match or {}).get('description', '')}"
+        text = f"{port_name} {(match or {}).get('description', '')} {connection.get('reason', '')}"
+        return re.sub(r"single[\s-]*start", "", text, flags=re.IGNORECASE)
 
     by_destination: dict = {}
     for c in connections:
@@ -1102,10 +826,10 @@ def insert_start_stop_interlocks(connections: list, blocks_by_name: dict) -> tup
 
     for to_block, dest_conns in by_destination.items():
         start_conn = next(
-            (c for c in dest_conns if START_PORT_RE.search(port_search_text(to_block, c["to_port"]))), None
+            (c for c in dest_conns if START_PORT_RE.search(port_search_text(to_block, c["to_port"], c))), None
         )
         stop_conn = next(
-            (c for c in dest_conns if STOP_PORT_RE.search(port_search_text(to_block, c["to_port"]))), None
+            (c for c in dest_conns if STOP_PORT_RE.search(port_search_text(to_block, c["to_port"], c))), None
         )
         if not start_conn or not stop_conn or start_conn["from_block"] == stop_conn["from_block"]:
             continue  # no separate start/stop sources feeding this block - nothing to protect
@@ -1123,8 +847,11 @@ def insert_start_stop_interlocks(connections: list, blocks_by_name: dict) -> tup
             "outputs": [{"name": "OUT", "datatype": "BOOL", "description": "Gated start command"}],
         })
 
+        # Start is fully consumed by the gate - it should never reach the
+        # destination except through it. Stop is NOT removed: it keeps
+        # its own direct connection to the destination (already in
+        # new_connections) in addition to also feeding the gate below.
         new_connections.remove(start_conn)
-        new_connections.remove(stop_conn)
         new_connections.append({
             "from_block": start_conn["from_block"], "from_port": start_conn["from_port"],
             "to_block": gate_name, "to_port": "IN1",
@@ -1147,175 +874,16 @@ def insert_start_stop_interlocks(connections: list, blocks_by_name: dict) -> tup
     return new_connections, gate_blocks
 
 
-def infer_logic_gates(blocks_by_name: dict, connections: list, user_guidance: str) -> tuple:
-    """General-purpose logic-gate synthesis - unlike the deterministic
-    start/stop AND gate above (a fixed rule that always fires), this is
-    exploratory: given the full picture (every block's real ports, every
-    already-inferred connection, and the user's own free-text guidance),
-    ask Grok whether any other 2-input logic gate (AND/OR/NOR) should be
-    inserted to embed control logic the user actually described that a
-    plain block-to-block wire can't express - e.g. "trip if either of
-    two alarms fires" needs an OR gate. Only runs (and only costs tokens)
-    when user_guidance is non-empty, since without it there's no
-    reliable signal for what extra logic - if any - the user wants
-    beyond what plain per-pair connection inference already covers.
-
-    Every gate has exactly 2 inputs (IN1, IN2) and 1 output (OUT) - a
-    single-signal inversion (NOT) doesn't need its own gate, it's just
-    an "inverted": true connection, same as everywhere else in this
-    pipeline. Every proposed connection is validated against the real
-    (or newly-proposed-gate) port lists before being accepted, same as
-    validate_connections does for normal connections.
-
-    Returns (new_connections, new_gate_blocks); (connections, [])
-    unchanged if user_guidance is empty or Grok proposes nothing."""
-    if not user_guidance.strip():
-        return connections, []
-
-    system_prompt = (
-        "You are a careful industrial automation engineering assistant. "
-        "Output only valid JSON."
-    )
-
-    blocks_summary = {
-        name: {"inputs": [p["name"] for p in b["inputs"]], "outputs": [p["name"] for p in b["outputs"]]}
-        for name, b in blocks_by_name.items()
-    }
-
-    user_prompt = f"""
-Below is the full picture of one control diagram: every block's real
-port names, every connection already inferred between them, and the
-user's own free-text guidance about their application.
-
-Your task: decide whether any 2-input logic gate (AND, OR, or NOR)
-should be inserted to correctly embed control logic the user described
-that a plain block-to-block wire can't express by itself - e.g. "trip
-if either alarm fires" needs an OR gate; "run only if both permissives
-are true" needs an AND gate. Do NOT propose a gate unless the user's
-guidance (or an unambiguous combination of documented signals) clearly
-calls for combining two specific signals before they reach a specific
-destination port - a plausible-sounding guess is worse than no gate at
-all here. The classic separate start/stop pushbutton safety interlock
-is already handled elsewhere automatically - do not propose it again;
-only propose genuinely NEW logic beyond that.
-
-STRICT RULES:
-- Only reference block/port names that literally appear below.
-- Each gate has exactly 2 inputs (IN1, IN2) and 1 output (OUT) - for a
-  single-signal inversion (NOT), just mark the relevant connection's
-  "inverted" as true instead of inventing a gate for it.
-- For every gate you propose, you MUST also say which existing
-  connection(s) it replaces (in "remove_connections") and which new
-  connections route through it instead (in "add_connections") - a gate
-  that doesn't actually connect into the diagram is useless.
-- If nothing clearly calls for a new gate, return empty lists - this is
-  the common, correct answer when the guidance doesn't describe this
-  kind of combinational logic.
-
-=== Blocks (name -> real ports) ===
-{json.dumps(blocks_summary, indent=2)}
-
-=== Already-inferred connections ===
-{json.dumps(connections, indent=2)}
-
-=== User guidance ===
-\"\"\"
-{user_guidance}
-\"\"\"
-
-Output only valid JSON in exactly this shape:
-{{
-  "gate_blocks": [
-    {{"block_name": "...", "gate_type": "AND|OR|NOR", "description": "..."}}
-  ],
-  "remove_connections": [
-    {{"from_block": "...", "from_port": "...", "to_block": "...", "to_port": "..."}}
-  ],
-  "add_connections": [
-    {{"from_block": "...", "from_port": "...", "to_block": "...", "to_port": "...", "inverted": false, "reason": "..."}}
-  ]
-}}
-""".strip()
-
-    result = call_model_json(system_prompt, user_prompt)
-
-    proposed_gates = result.get("gate_blocks", []) or []
-    gate_blocks = []
-    for g in proposed_gates:
-        gate_type = (g.get("gate_type") or "").upper()
-        name = g.get("block_name")
-        if gate_type not in ("AND", "OR", "NOR") or not name:
-            print(f"  Skipping proposed gate {g!r} - missing a name or an unknown gate_type.")
-            continue
-        gate_blocks.append({
-            "block_name": name,
-            "block_type": gate_type,
-            "description": g.get("description", ""),
-            "inputs": [
-                {"name": "IN1", "datatype": "BOOL", "description": "Gate input 1"},
-                {"name": "IN2", "datatype": "BOOL", "description": "Gate input 2"},
-            ],
-            "outputs": [{"name": "OUT", "datatype": "BOOL", "description": "Gate output"}],
-        })
-
-    if not gate_blocks:
-        return connections, []
-
-    all_names = set(blocks_by_name) | {g["block_name"] for g in gate_blocks}
-    port_lookup = {**blocks_by_name, **{g["block_name"]: g for g in gate_blocks}}
-    new_connections = list(connections)
-
-    def matches(c, spec):
-        return (c.get("from_block") == spec.get("from_block") and c.get("from_port") == spec.get("from_port")
-                and c.get("to_block") == spec.get("to_block") and c.get("to_port") == spec.get("to_port"))
-
-    for spec in result.get("remove_connections", []) or []:
-        match = next((c for c in new_connections if matches(c, spec)), None)
-        if match:
-            new_connections.remove(match)
-        else:
-            print(f"  Warning: gate step asked to remove a connection that doesn't exist: {spec}")
-
-    def has_output(block_name, port_name):
-        block = port_lookup.get(block_name)
-        return bool(block) and port_name in {p["name"] for p in block["outputs"]}
-
-    def has_input(block_name, port_name):
-        block = port_lookup.get(block_name)
-        return bool(block) and port_name in {p["name"] for p in block["inputs"]}
-
-    for spec in result.get("add_connections", []) or []:
-        from_block, from_port = spec.get("from_block"), spec.get("from_port")
-        to_block, to_port = spec.get("to_block"), spec.get("to_port")
-        if from_block not in all_names or to_block not in all_names:
-            print(f"  Dropping gate-step connection - unknown block: {spec}")
-        elif not has_output(from_block, from_port):
-            print(f"  Dropping gate-step connection - '{from_port}' is not an output of {from_block}: {spec}")
-        elif not has_input(to_block, to_port):
-            print(f"  Dropping gate-step connection - '{to_port}' is not an input of {to_block}: {spec}")
-        else:
-            new_connections.append({
-                "from_block": from_block, "from_port": from_port,
-                "to_block": to_block, "to_port": to_port,
-                "reason": spec.get("reason", "Logic gate wiring"),
-                "confidence": spec.get("confidence", 0.85),
-                "inverted": bool(spec.get("inverted", False)),
-            })
-
-    print(f"  Inferred {len(gate_blocks)} additional logic gate(s): {[g['block_name'] for g in gate_blocks]}")
-    return new_connections, gate_blocks
-
-
 # ---------------------------------------------------------------------
-# Deterministic drawing (fixed layout code, not LLM-generated)
+# Step 4 - Deterministic drawing (fixed layout code, not LLM-generated)
 # ---------------------------------------------------------------------
 
 ROW_HEIGHT = 1.0
 TITLE_HEIGHT = 3
 ANNOTATION_LINE_HEIGHT = 0.75  # extra vertical space per annotation line beyond the first
 BOX_WIDTH = 6.0
-GAP = 14.0  # horizontal gap between adjacent boxes, leaves room for labels + wires
-VERTICAL_GAP = 3.0  # vertical space between stacked component boxes in hub-and-spoke mode
+GAP = 14.0  # horizontal gap between adjacent columns, leaves room for labels + wires
+VERTICAL_GAP = 3.0  # vertical space between stacked blocks in the same column
 STUB = 0.6  # length of the little tick mark sticking out of each pin
 
 
@@ -1327,17 +895,14 @@ def annotation_lines(block: dict) -> list:
     """Optional custom subtitle lines for one block (block["annotation"]
     in its io_jsons/*.json, a string that can contain "\\n" for multiple
     lines) shown under the block name instead of the default block_type
-    text - e.g. to surface fixed engineering setpoints (alarm limits,
-    scale range, etc.) for this specific project without hardcoding them
-    into the drawing code. Empty list if the block has no "annotation"."""
+    text. Empty list if the block has no "annotation"."""
     text = (block.get("annotation") or "").strip()
     return text.split("\n") if text else []
 
 
 def title_height(block: dict) -> float:
     """Title band height for one block: the default TITLE_HEIGHT, plus
-    room for any annotation lines beyond the first (which already fits
-    in the same space the single-line block_type subtitle used)."""
+    room for any annotation lines beyond the first."""
     extra_lines = max(len(annotation_lines(block)) - 1, 0)
     return TITLE_HEIGHT + extra_lines * ANNOTATION_LINE_HEIGHT
 
@@ -1366,28 +931,18 @@ def box_layout(block: dict, box_left: float, box_bottom: float = 0.0) -> dict:
     }
 
 
-def layout_all_blocks(blocks_in_order: list) -> dict:
-    """Place every block left-to-right in a single row (in the given
-    order) and return {block_name: layout}."""
-    layouts = {}
-    x = 0.0
-    for block in blocks_in_order:
-        layouts[block["block_name"]] = box_layout(block, box_left=x)
-        x += BOX_WIDTH + GAP
-    return layouts
-
-
-def topological_order(blocks_in_order: list, connections: list) -> list:
-    """Order blocks left-to-right by actual data flow (Kahn's algorithm):
-    if one block's output feeds another's input, the source ends up to
-    the left of the destination, instead of whatever order the blocks
-    happened to be discovered in. Falls back gracefully when the
-    connection graph has a cycle - e.g. a component that both takes
-    commands from and sends feedback back to another block, which is
-    common and expected - by breaking the tie on whichever remaining
-    block has the fewest unresolved incoming edges, rather than giving
-    up on ordering the rest of the diagram. Ties are otherwise broken by
-    original discovery order, so the layout stays stable across runs."""
+def compute_layers(blocks_in_order: list, connections: list) -> dict:
+    """Assign each block a left-to-right layer number by actual data
+    flow (Kahn's algorithm, processed one whole "ready" batch at a time):
+    0 for a pure source, N+1 for anything fed only by layer-N-or-earlier
+    blocks. Independent blocks with no path between them - e.g. two
+    separate buttons feeding the same drive - land in the SAME layer,
+    which is what lets automatic_columns group them into one column.
+    Falls back gracefully on a cycle (e.g. a component that both takes
+    commands from and sends feedback back to another block) by breaking
+    the tie on whichever remaining block has the fewest unresolved
+    incoming edges. Ties are otherwise broken by original discovery
+    order, so the layout stays stable across runs."""
     names = [b["block_name"] for b in blocks_in_order]
     original_index = {name: i for i, name in enumerate(names)}
 
@@ -1401,26 +956,56 @@ def topological_order(blocks_in_order: list, connections: list) -> list:
         in_degree[b] += 1
 
     remaining = set(names)
-    ordered_names = []
+    layer_of = {}
+    layer = 0
     while remaining:
         ready = sorted(
             (n for n in remaining if in_degree[n] == 0),
             key=lambda n: original_index[n],
         )
         if not ready:
-            # A cycle is blocking further progress - break it by picking
-            # the remaining block with the fewest unresolved incoming
-            # edges instead of stalling.
             ready = [min(remaining, key=lambda n: (in_degree[n], original_index[n]))]
         for n in ready:
-            ordered_names.append(n)
+            layer_of[n] = layer
             remaining.discard(n)
             for m in out_edges[n]:
                 if m in remaining:
                     in_degree[m] -= 1
+        layer += 1
+    return layer_of
 
-    name_to_block = {b["block_name"]: b for b in blocks_in_order}
-    return [name_to_block[n] for n in ordered_names]
+
+def automatic_columns(blocks_in_order: list, connections: list) -> list:
+    """Default automatic layout: place blocks left-to-right by data-flow
+    layer (see compute_layers), and within the same layer, stack blocks
+    of the same kind into one column - e.g. several digital input
+    channels used as different buttons/sensors read as one family and
+    stack together, while a differently-typed block at the same layer
+    (like an analog measurement block) still gets its own column.
+
+    Simple field input devices are grouped by is_input_device_block()
+    (a stable, deterministic classification - see that function) rather
+    than by the raw block_type string, since Grok's freely-written
+    block_type for a specific instance is not reliably identical even
+    across instances of the exact same underlying block - grouping by
+    the raw string would silently split them into separate columns
+    whenever the wording happened to differ. Every other block still
+    groups by its own block_type, since those aren't repeated generic
+    instances the same way."""
+    layer_of = compute_layers(blocks_in_order, connections)
+    original_index = {b["block_name"]: i for i, b in enumerate(blocks_in_order)}
+
+    groups: dict = {}
+    for b in blocks_in_order:
+        type_key = "INPUT_DEVICE" if is_input_device_block(b) else b.get("block_type", "")
+        key = (layer_of[b["block_name"]], type_key)
+        groups.setdefault(key, []).append(b)
+
+    ordered_keys = sorted(
+        groups,
+        key=lambda key: (key[0], original_index[groups[key][0]["block_name"]]),
+    )
+    return [groups[key] for key in ordered_keys]
 
 
 def layout_hub_and_spokes(group_block: dict, component_blocks: list) -> dict:
@@ -1453,22 +1038,15 @@ def load_manual_layout(blocks_by_name: dict, connections: list) -> list:
     this script): a JSON object like {"columns": [["A"], ["B", "C"],
     ["D"]]} - each inner list is one column, stacked vertically,
     left-to-right in the order given. Lets you pin an exact arrangement
-    that pure data-flow ordering can't express on its own - e.g. two
-    sibling blocks with no connection between them (so nothing in the
-    connection graph says which should be left/right of the other, or
-    that they belong in the same column) still need a specific spot.
+    instead of the automatic one.
 
     A block layout.json doesn't mention yet (most commonly a synthetic
     logic-gate block, whose name is only decided at run time) doesn't
     invalidate the whole thing - it's inserted automatically right after
-    the rightmost column any of its source blocks appears in, so e.g. a
-    gate fed by two buttons in column 1 lands in a new column 2, ahead
-    of whatever was already there (like the motor at column 2), instead
-    of being silently ignored or dumped somewhere nonsensical.
+    the rightmost column any of its source blocks appears in.
 
-    Returns None (falls back to the automatic topological layout) only
-    if the file is missing, or if it names a block that doesn't actually
-    exist."""
+    Returns None (falls back to automatic_columns) only if the file is
+    missing, or if it names a block that doesn't actually exist."""
     if not os.path.exists(LAYOUT_PATH):
         return None
 
@@ -1507,9 +1085,8 @@ def load_manual_layout(blocks_by_name: dict, connections: list) -> list:
 def layout_columns(columns: list) -> dict:
     """Place blocks in explicit left-to-right columns (each column a
     list of blocks stacked vertically, top-aligned to the tallest
-    column) per an optional manual layout.json override - the general
-    form of layout_hub_and_spokes's single-group-plus-stack layout, for
-    an arbitrary number of columns."""
+    column) - the general form of layout_hub_and_spokes's
+    single-group-plus-stack layout, for an arbitrary number of columns."""
     layouts = {}
     stack_heights = [
         sum(block_height(b) for b in column) + VERTICAL_GAP * max(len(column) - 1, 0)
@@ -1590,9 +1167,7 @@ CHAR_WIDTH_ESTIMATE = 0.42  # rough monospace glyph width (data units) at the pi
 
 def pin_label_text(block: dict, port: dict, side: str) -> str:
     """The exact text draw_block renders for one pin's label - kept in
-    sync with draw_block so routing can measure it accurately (an input
-    with a configured port_values entry is longer than its bare name,
-    e.g. "90.0-VAL_HH" instead of just "VAL_HH")."""
+    sync with draw_block so routing can measure it accurately."""
     if side == "inputs":
         value = block.get("port_values", {}).get(port["name"])
         return f"{value}-{port['name']}" if value is not None else port["name"]
@@ -1621,12 +1196,10 @@ def draw_connections(ax, connections: list, blocks_by_name: dict, layouts: dict,
     between.
 
     Highway wires additionally stagger their vertical drop near the
-    source and their vertical rise near the destination (side_lane
-    below) - without this, every highway wire leaving the same source
-    block (or entering the same destination block) would drop/rise
-    along the exact same x position regardless of which port it's
-    actually on, making them visually indistinguishable from each other
-    even though their horizontal "basement" row is already unique."""
+    source and their vertical rise near the destination - without this,
+    every highway wire leaving the same source block (or entering the
+    same destination block) would drop/rise along the exact same x
+    position regardless of which port it's actually on."""
     lowest_bottom = min(l["bottom"] for l in layouts.values())
     wrap_offset = 1.5
     side_stagger = 0.35
@@ -1661,10 +1234,8 @@ def draw_connections(ax, connections: list, blocks_by_name: dict, layouts: dict,
             wrap_y = lowest_bottom - (2 + wrap_count * wrap_offset)
             wrap_count += 1
             # Explicitly draw the horizontal run from the pin itself out
-            # to x1/x2 (not just the vertical drop) - without this, the
-            # line only started AT x1/x2, leaving a visible gap between
-            # the pin and where the wire actually begins whenever the
-            # label-clearance offset is bigger than the tiny pin stub.
+            # to x1/x2 (not just the vertical drop) so the wire never
+            # visibly floats disconnected from its pin.
             xs = [from_layout["right"], x1, x1, x2, x2, to_layout["left"]]
             ys = [y_from, y_from, wrap_y, wrap_y, y_to, y_to]
 
@@ -1694,27 +1265,14 @@ def draw_diagram(blocks_in_order: list, connections: list) -> None:
         is_forward = lambda c: c["from_block"] == group_name  # noqa: E731
         ordered_for_numbering = [group_block] + component_blocks
     else:
-        manual_columns = load_manual_layout(blocks_by_name, connections)
-        if manual_columns:
-            # A layout.json override is present and names every block
-            # exactly once - use its explicit column groupings instead of
-            # the automatic topological ordering below.
-            layouts = layout_columns(manual_columns)
-            col_of = {b["block_name"]: i for i, column in enumerate(manual_columns) for b in column}
-            is_forward = lambda c: col_of[c["to_block"]] == col_of[c["from_block"]] + 1  # noqa: E731
-            ordered_for_numbering = [b for column in manual_columns for b in column]
-        else:
-            # Fallback: no single group detected (zero, or more than one),
-            # and no manual layout.json override - order blocks
-            # left-to-right by actual data flow (whichever block feeds
-            # another's input goes to the left of it) instead of whatever
-            # order they happened to be discovered in.
-            blocks_in_order = topological_order(blocks_in_order, connections)
-            layouts = layout_all_blocks(blocks_in_order)
-            order = [b["block_name"] for b in blocks_in_order]
-            index_of = {name: i for i, name in enumerate(order)}
-            is_forward = lambda c: index_of[c["to_block"]] == index_of[c["from_block"]] + 1  # noqa: E731
-            ordered_for_numbering = blocks_in_order
+        # layout.json can pin an exact arrangement; otherwise place
+        # blocks automatically by data-flow layer, stacking same-type
+        # blocks at the same layer into one column.
+        columns = load_manual_layout(blocks_by_name, connections) or automatic_columns(blocks_in_order, connections)
+        layouts = layout_columns(columns)
+        col_of = {b["block_name"]: i for i, column in enumerate(columns) for b in column}
+        is_forward = lambda c: col_of[c["to_block"]] == col_of[c["from_block"]] + 1  # noqa: E731
+        ordered_for_numbering = [b for column in columns for b in column]
 
     n_highway = sum(1 for c in connections if not is_forward(c))
     overall_height = max(l["top"] for l in layouts.values())
@@ -1747,9 +1305,7 @@ def main() -> None:
         print(f"Loaded user guidance from {USER_PROMPT_PATH} ({len(user_guidance)} chars).")
 
     ensure_all_summaries_exist()
-    blocks = discover_blocks()
-    apply_port_selection_mode(blocks, user_guidance)
-    assign_all_port_values(blocks, user_guidance)
+    blocks = discover_blocks(user_guidance)
     pairs = candidate_pairs(blocks, user_guidance)
     print(f"Found {len(pairs)} candidate pair(s) whose rules reference each other: {pairs}")
 
@@ -1766,20 +1322,12 @@ def main() -> None:
     blocks_by_name = {name: info["block"] for name, info in blocks.items()}
     connections = validate_connections(all_connections, blocks_by_name)
 
-    # Deterministic safety gate first (always fires when the pattern
-    # exists, free), then the general Grok-driven gate step sees the
-    # already-gated picture (so it won't try to re-propose the same
-    # start/stop gate) and can add any other logic the user described.
-    connections, safety_gates = insert_start_stop_interlocks(connections, blocks_by_name)
-    if safety_gates:
-        print(f"Inserted {len(safety_gates)} safety AND gate(s): {[g['block_name'] for g in safety_gates]}")
+    # Deterministic safety gate: always fires when a destination gets
+    # separate start/stop commands from two different sources, for free.
+    connections, gate_blocks = insert_start_stop_interlocks(connections, blocks_by_name)
+    if gate_blocks:
+        print(f"Inserted {len(gate_blocks)} safety AND gate(s): {[g['block_name'] for g in gate_blocks]}")
 
-    blocks_by_name_with_gates = {**blocks_by_name, **{g["block_name"]: g for g in safety_gates}}
-    connections, extra_gates = infer_logic_gates(blocks_by_name_with_gates, connections, user_guidance)
-    gate_blocks = safety_gates + extra_gates
-
-    # The final, post-gate state is what gets saved - redraw.py just
-    # loads this directly, no need to recompute any gate logic.
     with open(CONNECTIONS_PATH, "w", encoding="utf-8") as f:
         json.dump({"connections": connections, "uncertain_connections": all_uncertain, "gate_blocks": gate_blocks},
                    f, indent=2, ensure_ascii=False)

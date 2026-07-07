@@ -1,89 +1,18 @@
 {
   "block_name": "StopButton_DI",
-  "block_type": "Digital Input Signal Processing Block",
-  "description": "The StopButton_DI block is used for signal processing of a digital input value, specifically in the context of S7-300/400 SM digital input modules.",
-  "inputs": [
-    {
-      "name": "VALUE",
-      "datatype": "BOOL",
-      "description": "The digital input value from the process image."
-    },
-    {
-      "name": "VALUE_QC",
-      "datatype": "BOOL",
-      "description": "The value status of the digital input channel, used when PQC is TRUE."
-    },
-    {
-      "name": "MODE",
-      "datatype": "DWORD",
-      "description": "Influences how the block treats the digital value, with the high byte determining value status."
-    },
-    {
-      "name": "PQC",
-      "datatype": "BOOL",
-      "description": "Determines if the block reads the value status of the digital value from the process image."
-    },
-    {
-      "name": "SIM_I",
-      "datatype": "BOOL",
-      "description": "The simulation value output when SIM_ON is TRUE."
-    },
-    {
-      "name": "SIM_ON",
-      "datatype": "BOOL",
-      "description": "Activates simulation mode."
-    },
-    {
-      "name": "SUBS_I",
-      "datatype": "BOOL",
-      "description": "The substitute value used when the digital input is invalid and SUBS_ON is TRUE."
-    },
-    {
-      "name": "SUBS_ON",
-      "datatype": "BOOL",
-      "description": "Enables substitution of the digital input value when it is invalid."
-    },
-    {
-      "name": "LAST_ON",
-      "datatype": "BOOL",
-      "description": "Determines if the last valid output value should be held when the input becomes invalid."
-    }
-  ],
+  "block_type": "Digital Input Channel",
+  "description": "Stop button digital input for motor control",
+  "inputs": [],
   "outputs": [
     {
       "name": "Q",
       "datatype": "BOOL",
-      "description": "The processed digital output value."
-    },
-    {
-      "name": "QBAD",
-      "datatype": "BOOL",
-      "description": "Indicates if the process value is invalid."
-    },
-    {
-      "name": "QLAST",
-      "datatype": "BOOL",
-      "description": "Indicates if the last valid value injection is active."
-    },
-    {
-      "name": "QMOD_ERR",
-      "datatype": "BOOL",
-      "description": "Indicates a higher-level error."
-    },
-    {
-      "name": "QSIM",
-      "datatype": "BOOL",
-      "description": "Indicates if simulation is active."
-    },
-    {
-      "name": "QSUBS",
-      "datatype": "BOOL",
-      "description": "Indicates if substitution is active."
-    },
-    {
-      "name": "QUALITY",
-      "datatype": "BYTE",
-      "description": "The quality code of the output value."
+      "description": "Processed digital output value",
+      "reason": "The processed stop button signal is needed to control the motor"
     }
-  ]
+  ],
+  "port_values": {
+    "VALUE": "FALSE"
+  },
+  "is_input_device": true
 }

@@ -4,19 +4,19 @@
       "from_block": "Sensor_DI",
       "from_port": "Q",
       "to_block": "C_DRV_1D",
-      "to_port": "IntProtG",
-      "reason": "Sensor_DI's Q output is a safety interlock into the motor",
-      "confidence": 0.95,
-      "inverted": true
-    },
-    {
-      "from_block": "StartButton_DI",
-      "from_port": "Q",
-      "to_block": "C_DRV_1D",
-      "to_port": "EBFE",
-      "reason": "Start button's Q output is an automatic start command",
+      "to_port": "EBVG",
+      "reason": "Sensor output provides a remote safety operating interlock into the motor",
       "confidence": 1.0,
       "inverted": false
+    },
+    {
+      "from_block": "StopButton_DI",
+      "from_port": "Q",
+      "to_block": "C_DRV_1D",
+      "to_port": "EBFA",
+      "reason": "Stop button output connected to motor stop input",
+      "confidence": 1.0,
+      "inverted": true
     },
     {
       "from_block": "StartButton_DI",
@@ -40,18 +40,28 @@
       "from_block": "AND_C_DRV_1D",
       "from_port": "OUT",
       "to_block": "C_DRV_1D",
-      "to_port": "ESR",
+      "to_port": "EBFE",
       "reason": "Gated start command to the destination block",
       "confidence": 0.99,
       "inverted": false
     }
   ],
-  "uncertain_connections": [],
+  "uncertain_connections": [
+    {
+      "from_block": "StartButton_DI",
+      "from_port": null,
+      "to_block": "C_DRV_1D",
+      "to_port": null,
+      "reason": "No stop button or sensor output connections described in the provided JSON",
+      "confidence": 0.0,
+      "inverted": false
+    }
+  ],
   "gate_blocks": [
     {
       "block_name": "AND_C_DRV_1D",
       "block_type": "AND",
-      "description": "Prevents a simultaneous start+stop command from reaching C_DRV_1D's ESR input.",
+      "description": "Prevents a simultaneous start+stop command from reaching C_DRV_1D's EBFE input.",
       "inputs": [
         {
           "name": "IN1",
