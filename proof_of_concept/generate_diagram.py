@@ -399,44 +399,33 @@ def extract_backticked_names(text: str) -> set:
     return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", text))
 
 
-INPUT_DEVICE_KEYWORDS = ("digital input", "analog input", "channel driver", "pushbutton", "push button", "sensor")
-
-
 def is_input_device_block(block: dict) -> bool:
     """True for a simple field input device (pushbutton, sensor, digital/
-    analog input channel module) - the kind of block whose ONLY relevant
-    port in a basic application is its main output (commonly "Q").
+    analog input channel module) - the kind of block whose only relevant
+    signal in a basic application is a single output.
 
-    Prefers the block's stored "is_input_device" flag (set once, with
-    full context - including the summary's own Purpose text, not just
-    Grok's per-instance block_type/description - at selection time, see
-    select_ports_for_block). Falls back to a keyword check against
-    block_type/description for blocks that don't have the flag yet (e.g.
-    hand-authored io_jsons files).
-
-    The stored flag exists because Grok's freely-written block_type/
-    description for a specific instance is NOT reliably consistent even
-    across identical underlying blocks: e.g. one digital input channel
-    used as "StartButton_DI" got a description containing "Digital
-    input", but the SAME manual used as "StopButton_DI" got "Remote stop
-    button for motor control" - no classifying keyword at all - purely
-    because Grok phrased that one call differently. Checking only
-    block_type/description at use-time reproduced that inconsistency
-    every time; the summary's Purpose text is identical across instances
-    of the same block, so classifying from it once is far more reliable."""
-    if "is_input_device" in block:
-        return block["is_input_device"]
-    text = f"{block.get('block_type', '')} {block.get('description', '')}".lower()
-    return any(kw in text for kw in INPUT_DEVICE_KEYWORDS)
+    This is Grok's own explicit judgment call, asked directly as a plain
+    yes/no question with full context (the block's summary and the
+    user's application description) in the SAME call that selects its
+    ports - see select_ports_for_block. There is no keyword list or
+    fallback here: guessing this from block_type/description text after
+    the fact proved unreliable (the same underlying block, used for two
+    different instances, got worded differently enough by Grok that a
+    keyword search caught one and missed the other), whereas Grok
+    already knows the answer at selection time - it just needs to be
+    asked to state it, not have it reverse-engineered from prose later."""
+    return bool(block.get("is_input_device"))
 
 
 def force_input_device_ports(block: dict) -> dict:
-    """Deterministically trim a simple field input device down to just
-    its main output ("Q") with no wired inputs at all."""
-    q_port = next((p for p in block["outputs"] if p["name"] == "Q"), None)
+    """Enforce the one STRUCTURAL fact that's true by definition for a
+    simple field input device, regardless of what it's called or which
+    vendor/catalog it's from: it has no wired inputs. Which output(s) to
+    keep is NOT hardcoded to a specific name (e.g. "Q") - that would only
+    hold for one specific block family - so whatever Grok already
+    selected as this block's outputs is trusted as-is."""
     adjusted = dict(block)
     adjusted["inputs"] = []
-    adjusted["outputs"] = [q_port] if q_port else block["outputs"]
     return adjusted
 
 
@@ -487,10 +476,23 @@ Input Channel", "Analog Measurement", "Motor Drive"), not this
 instance's name - two different instances of the same underlying block
 should get the same block_type.
 
+Also answer directly, as plain facts about this block (not a guess from
+wording elsewhere):
+- "is_input_device": true if this is a simple field input device (a
+  pushbutton, sensor, or digital/analog input channel module) whose
+  only relevant signal in a basic application is a single output value,
+  with no inputs that would ever need to be wired to another block.
+  false for anything else (a drive, a group/route, a measurement block
+  with real configuration inputs, a logic block, etc.).
+- "is_group": true if this is a supervisory group/route block that
+  coordinates other objects (drives, valves, etc.) as members. false otherwise.
+
 Output only this JSON shape:
 {{
   "block_type": "...",
   "description": "...",
+  "is_input_device": false,
+  "is_group": false,
   "inputs": [{{"name": "...", "datatype": "...", "description": "...", "reason": "...", "value": "..."}}],
   "outputs": [{{"name": "...", "datatype": "...", "description": "...", "reason": "..."}}]
 }}
@@ -521,6 +523,8 @@ Output only this JSON shape:
         "block_name": block_name,
         "block_type": result.get("block_type", "Unknown"),
         "description": result.get("description", ""),
+        "is_input_device": bool(result.get("is_input_device")),
+        "is_group": bool(result.get("is_group")),
         "inputs": [{"name": p["name"], "datatype": p.get("datatype", "?"),
                     "description": p.get("description", ""), "reason": p.get("reason", "")}
                    for p in inputs],
@@ -533,20 +537,9 @@ Output only this JSON shape:
     if port_values:
         block["port_values"] = port_values
 
-    # Classify from block_type/description ONLY - not the summary's full
-    # Purpose text. Purpose text was tried as an extra signal, but it
-    # describes what a block INTERFACES WITH, not what it IS: C_DRV_1D's
-    # own Purpose text mentions "local operation via field pushbuttons",
-    # which falsely classified the motor drive itself as an input device
-    # and wiped out its whole input list. The prompt above now explicitly
-    # asks Grok for a real category name (not the instance name) in
-    # block_type, which is a much cleaner signal on its own.
-    classification_text = f"{block['block_type']} {block['description']}".lower()
-    block["is_input_device"] = any(kw in classification_text for kw in INPUT_DEVICE_KEYWORDS)
-
     if block["is_input_device"]:
         block = force_input_device_ports(block)
-        print(f"  {block_name} is a simple input device - trimmed to just its Q output.")
+        print(f"  {block_name} is a simple input device (Grok's own call) - clearing its wired inputs.")
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(block, f, indent=2, ensure_ascii=False)
@@ -681,6 +674,11 @@ STRICT RULES:
   most generic-sounding one.
 - Mark a connection "inverted": true if the signal must be logically negated before
   reaching its destination.
+- Tag each connection's "role" with what it actually does: "start" (a start/run/ON
+  command), "stop" (a stop/OFF command), or "other" (anything else - feedback,
+  interlock, process value, link, etc.). Judge this the same way you judged the
+  connection itself - by what the port and the application actually mean, not by
+  whether the word "start"/"stop" literally appears anywhere.
 
 Output only valid JSON in exactly this shape:
 {{
@@ -692,7 +690,8 @@ Output only valid JSON in exactly this shape:
       "to_port": "...",
       "reason": "short reason",
       "confidence": 0.0,
-      "inverted": false
+      "inverted": false,
+      "role": "start|stop|other"
     }}
   ],
   "uncertain_connections": []
@@ -718,7 +717,15 @@ Output only valid JSON in exactly this shape:
 def validate_connections(connections: list, blocks_by_name: dict) -> list:
     """Drop any connection that references a block/port not actually
     present in the JSON files (belt-and-suspenders check against
-    hallucination), plus the deterministic input-device rules."""
+    hallucination).
+
+    This alone is enough to guarantee a simple input device never
+    receives a wired input and never uses anything but its selected
+    output(s): force_input_device_ports (see select_ports_for_block)
+    already cleared its "inputs" to [] before connection inference ever
+    ran, so has_input() below is always False for it, and Grok was never
+    even shown a port that isn't one of its selected outputs in the
+    first place - no separate special-case check needed."""
 
     def has_output(block_name, port_name):
         if block_name not in blocks_by_name:
@@ -734,17 +741,6 @@ def validate_connections(connections: list, blocks_by_name: dict) -> list:
     for c in connections:
         from_block, from_port = c.get("from_block"), c.get("from_port")
         to_block, to_port = c.get("to_block"), c.get("to_port")
-
-        # Deterministic guarantee for simple field input devices: only
-        # their main output ("Q") ever matters, and they never receive a
-        # wired input at all.
-        if to_block in blocks_by_name and is_input_device_block(blocks_by_name[to_block]):
-            print(f"  Dropping connection - input device {to_block} never receives a wired input: {c}")
-            continue
-        if (from_block in blocks_by_name and is_input_device_block(blocks_by_name[from_block])
-                and from_port != "Q"):
-            print(f"  Dropping connection - input device {from_block} only ever uses its Q output: {c}")
-            continue
 
         if has_output(from_block, from_port) and has_input(to_block, to_port):
             valid.append(c)
@@ -771,19 +767,15 @@ def validate_connections(connections: list, blocks_by_name: dict) -> list:
     return valid
 
 
-START_PORT_RE = re.compile(r"start", re.IGNORECASE)
-STOP_PORT_RE = re.compile(r"stop|quickstp", re.IGNORECASE)
-
-
 def insert_start_stop_interlocks(connections: list, blocks_by_name: dict) -> tuple:
-    """Deterministic safety-wiring pattern - not left to the model, since
-    it's a fixed rule rather than a judgment call: if a destination
-    block gets its start-type command from one source block and its
-    stop-type command from a DIFFERENT source block - the classic
-    separate start/stop pushbutton setup - splice in a small synthetic
-    AND gate between them (start signal AND NOT stop signal), which
-    becomes the ONLY path for the start command (so it's never live
-    without the gate's protection).
+    """Deterministic safety-wiring pattern - not left to the model to
+    decide WHETHER to do, since it's a fixed engineering rule rather
+    than a judgment call: if a destination block gets its start-type
+    command from one source block and its stop-type command from a
+    DIFFERENT source block - the classic separate start/stop pushbutton
+    setup - splice in a small synthetic AND gate between them (start
+    signal AND NOT stop signal), which becomes the ONLY path for the
+    start command (so it's never live without the gate's protection).
 
     The stop command is different: it still ALSO feeds the gate
     (inverted, as the safety check against a simultaneous start), but
@@ -792,31 +784,20 @@ def insert_start_stop_interlocks(connections: list, blocks_by_name: dict) -> tup
     gate's protection to reach its destination, only the start signal
     does.
 
-    A destination port counts as "start-type"/"stop-type" if its bare
-    name, its documented description, OR the connection's own "reason"
-    (written by Grok specifically about that connection) matches
-    START_PORT_RE/STOP_PORT_RE. The reason is included because an
-    abbreviated port's own description often doesn't literally say
-    "start"/"stop" at all (e.g. a port described only as "Automatic ON
-    command"), even though the connection reasoning about it does (e.g.
-    "Remote start command") - relying on the static port description
-    alone missed exactly this case.
-
-    "single-start" is stripped before matching - it describes an
-    OPERATING MODE ("automatic and single-start modes"), not a
-    start-command port, and a bare substring match on "start" would
-    otherwise mistake that mode qualifier for an actual start port.
+    WHICH connection is start-type/stop-type is Grok's own explicit
+    "role" tag on each connection (see infer_connections_for_pair) -
+    not a regex guess over port names/descriptions. A port's literal
+    name or static description often doesn't say "start"/"stop" at all
+    (e.g. "Automatic ON command"), and a bare substring search is also
+    fooled by unrelated mode qualifiers (e.g. "single-start mode" is
+    describing an operating mode, not a start command) - Grok already
+    knows which is which when it proposes the connection, so it's asked
+    to say so directly instead of that being reverse-engineered from
+    prose afterward.
 
     Returns (new_connections, new_gate_blocks) - gate blocks are
     synthetic (not loaded from any file) and only exist for this
     diagram; add them to the block list handed to draw_diagram."""
-
-    def port_search_text(block_name, port_name, connection):
-        block = blocks_by_name.get(block_name, {})
-        match = next((p for p in block.get("inputs", []) if p["name"] == port_name), None)
-        text = f"{port_name} {(match or {}).get('description', '')} {connection.get('reason', '')}"
-        return re.sub(r"single[\s-]*start", "", text, flags=re.IGNORECASE)
-
     by_destination: dict = {}
     for c in connections:
         by_destination.setdefault(c["to_block"], []).append(c)
@@ -825,12 +806,8 @@ def insert_start_stop_interlocks(connections: list, blocks_by_name: dict) -> tup
     new_connections = list(connections)
 
     for to_block, dest_conns in by_destination.items():
-        start_conn = next(
-            (c for c in dest_conns if START_PORT_RE.search(port_search_text(to_block, c["to_port"], c))), None
-        )
-        stop_conn = next(
-            (c for c in dest_conns if STOP_PORT_RE.search(port_search_text(to_block, c["to_port"], c))), None
-        )
+        start_conn = next((c for c in dest_conns if c.get("role") == "start"), None)
+        stop_conn = next((c for c in dest_conns if c.get("role") == "stop"), None)
         if not start_conn or not stop_conn or start_conn["from_block"] == stop_conn["from_block"]:
             continue  # no separate start/stop sources feeding this block - nothing to protect
 
@@ -888,7 +865,12 @@ STUB = 0.6  # length of the little tick mark sticking out of each pin
 
 
 def is_group_block(block: dict) -> bool:
-    return "group" in block.get("block_type", "").strip().lower()
+    """Grok's own explicit judgment call (see select_ports_for_block),
+    not a "group" keyword search - a block's block_type can legitimately
+    describe something else entirely (e.g. "Motor Drive") while its
+    Purpose text merely mentions groups it interfaces with, which a bare
+    keyword search can't tell apart from actually being one."""
+    return bool(block.get("is_group"))
 
 
 def annotation_lines(block: dict) -> list:

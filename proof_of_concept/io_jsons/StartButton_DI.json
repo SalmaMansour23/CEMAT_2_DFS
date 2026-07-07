@@ -1,7 +1,9 @@
 {
   "block_name": "StartButton_DI",
   "block_type": "Digital Input Channel",
-  "description": "Digital input channel for processing start button signal",
+  "description": "Start button digital input for motor control",
+  "is_input_device": true,
+  "is_group": false,
   "inputs": [],
   "outputs": [
     {
@@ -12,7 +14,6 @@
     }
   ],
   "port_values": {
-    "VALUE": "FALSE"
-  },
-  "is_input_device": true
+    "VALUE": "false"
+  }
 }
