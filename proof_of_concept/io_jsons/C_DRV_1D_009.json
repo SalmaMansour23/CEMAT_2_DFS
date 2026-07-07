@@ -425,5 +425,10 @@
       "datatype": "INTEGER",
       "description": "Delay counter for OS"
     }
-  ]
+  ],
+  "port_values": {
+    "IntStart": "1",
+    "IntProtG": "0",
+    "QSTP": "1"
+  }
 }

@@ -6,7 +6,9 @@ you don't burn tokens re-inferring connections that haven't changed.
 
 Only rerun the real pipeline (generate_diagram.py) once you've actually
 changed which blocks/manuals/user_prompt.txt are involved - this script
-just re-renders the picture from what's already in grok_connections.json.
+just re-renders the picture from what's already in grok_connections.json,
+including any synthetic logic-gate blocks main() already inferred and
+saved there.
 """
 
 import json
@@ -18,10 +20,14 @@ def main() -> None:
     blocks = discover_blocks()
 
     with open(CONNECTIONS_PATH, "r", encoding="utf-8") as f:
-        connections = json.load(f)["connections"]
+        data = json.load(f)
 
-    draw_diagram([info["block"] for info in blocks.values()], connections)
-    print(f"Redrew {IMAGE_PATH} from {CONNECTIONS_PATH} ({len(connections)} connection(s)) - no Grok calls made.")
+    connections = data["connections"]
+    gate_blocks = data.get("gate_blocks", [])
+
+    draw_diagram([info["block"] for info in blocks.values()] + gate_blocks, connections)
+    print(f"Redrew {IMAGE_PATH} from {CONNECTIONS_PATH} ({len(connections)} connection(s), "
+          f"{len(gate_blocks)} gate(s)) - no Grok calls made.")
 
 
 if __name__ == "__main__":

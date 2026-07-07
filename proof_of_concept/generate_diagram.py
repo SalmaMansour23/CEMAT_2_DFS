@@ -81,6 +81,7 @@ IO_JSONS_DIR = "io_jsons"
 SUMMARY_MD_DIR = "summary_markdowns"
 CONNECTIONS_PATH = "grok_connections.json"
 IMAGE_PATH = "block_diagram.png"
+LAYOUT_PATH = "layout.json"
 
 # Optional free-text file where the person running this pipeline can
 # describe their specific application/project in their own words - e.g.
@@ -697,6 +698,85 @@ def apply_port_selection_mode(blocks: dict, user_guidance: str = "") -> None:
             time.sleep(SECONDS_BETWEEN_CALLS)
 
 
+def assign_port_values(block: dict, user_guidance: str) -> dict:
+    """If user_guidance specifies a literal configured value for any of
+    this block's input ports (e.g. "HHA 90" for a high-high alarm limit
+    input), ask Grok to map that onto the real port name so it can be
+    shown next to its pin in the diagram - like a real engineering
+    parameter sheet - instead of only being usable as prose context for
+    connection inference. Returns {} (no extra Grok call, no values) if
+    user_guidance is empty; never invents a value the user didn't
+    actually specify."""
+    if not user_guidance.strip():
+        return {}
+
+    input_names = [p["name"] for p in block["inputs"]]
+    if not input_names:
+        return {}
+
+    system_prompt = (
+        "You are a careful industrial automation engineering assistant. "
+        "Output only valid JSON."
+    )
+    user_prompt = f"""
+The person running this pipeline wrote the following free-text guidance
+about their specific project:
+\"\"\"
+{user_guidance}
+\"\"\"
+
+Below is the real input port list for one Siemens CEMAT block,
+{block['block_name']}. Does the guidance above specify a literal
+configured value (a setpoint, alarm limit, range boundary, etc.) for
+any of these specific input ports? If so, map each one to that value as
+a short display string (e.g. "90", "0.0", "100").
+
+STRICT RULES:
+- Only include a port if the guidance clearly gives a value for it -
+  match by MEANING (e.g. "high-high alarm" -> whichever port here is
+  documented/named as the high-high limit), not by requiring the user
+  to type the exact port name.
+- Do NOT invent or guess a value for any port the guidance doesn't
+  actually specify - an empty mapping is the correct answer if the
+  guidance doesn't cover this block at all.
+- Only use port names that literally appear in the list below.
+
+=== {block['block_name']} inputs ===
+{json.dumps(input_names, indent=2)}
+
+Output only valid JSON in exactly this shape:
+{{"port_values": {{"PortName": "value"}}}}
+""".strip()
+
+    result = call_model_json(system_prompt, user_prompt)
+    values = result.get("port_values", {}) or {}
+    return {name: str(value) for name, value in values.items() if name in input_names}
+
+
+def assign_all_port_values(blocks: dict, user_guidance: str) -> None:
+    """Mutates each discovered block in place, adding a "port_values"
+    dict for any input ports user_guidance specifies literal values for
+    (see assign_port_values), and saves it back to that block's
+    io_jsons/*.json so redraw.py (and any later run) sees it without
+    another Grok call. No-op (and no extra Grok calls at all) if
+    user_guidance is empty."""
+    if not user_guidance.strip():
+        return
+
+    names = list(blocks)
+    for i, name in enumerate(names, start=1):
+        info = blocks[name]
+        print(f"[{i}/{len(names)}] Checking user guidance for configured port values on {name}...")
+        values = assign_port_values(info["block"], user_guidance)
+        if values:
+            info["block"]["port_values"] = values
+            with open(info["json_path"], "w", encoding="utf-8") as f:
+                json.dump(info["block"], f, indent=2, ensure_ascii=False)
+            print(f"  Set port value(s) for {name}: {values} (saved to {info['json_path']})")
+        if i < len(names):
+            time.sleep(SECONDS_BETWEEN_CALLS)
+
+
 # ---------------------------------------------------------------------
 # Candidate pairs: only ask Grok about pairs whose rules actually
 # mention each other, so N blocks doesn't mean N^2 API calls in practice
@@ -773,6 +853,35 @@ STRICT RULES:
   stop after finding the first few obvious matches. Missing a documented
   rule is as bad as inventing a fake one.
 
+MINIMAL, ESSENTIAL WIRING ONLY:
+- Only wire the small set of signals genuinely needed for the described
+  application to work correctly - e.g. start/stop commands, run
+  feedback, the core process value, and safety interlocks. Do NOT wire
+  diagnostic, simulation, mode-selection (e.g. a digital input module's
+  MODE port), OS/HMI, maintenance, or status-only signals just because
+  matching ports happen to exist on both sides - a real, working
+  default engineering setup does not connect everything it technically
+  could.
+- Before including a connection, ask: would the system fail to perform
+  its basic described function without this wire? If not, leave it out
+  even if it's technically a valid, documented connection somewhere.
+  Prefer a small, clean set of connections over an exhaustive one.
+- PUSHBUTTON / DIGITAL INPUT MODULES: for a simple pushbutton or digital
+  input module (block_type/description says "digital input" or
+  "pushbutton"), the ONLY port that ever matters for wiring is its main
+  boolean output (typically named "Q"). Never wire its MODE, VALUE,
+  QBAD, QLAST, QMOD_ERR, SIM_*, SUBS_*, LAST_ON, QUALITY, or any other
+  port to anything - these are internal/diagnostic, not part of a basic
+  application, no matter how plausible a reason sounds.
+- INDEPENDENT INPUT DEVICES NEVER WIRE TO EACH OTHER: two different
+  input-type blocks (pushbuttons, sensors, digital/analog input
+  modules) are never connected directly to one another - each is
+  independent and feeds the same downstream consumer (e.g. a drive),
+  not each other. If both name_a and name_b are input-type devices with
+  no other block between them in this pair, do not invent a connection
+  between them; this holds even if a summary or guidance text seems to
+  loosely suggest a relationship - a real one always exists.
+
 GROUP <-> COMPONENT LINK CONNECTION IS MANDATORY - NEVER SKIP, NEVER UNCERTAIN:
 - FIRST check the precondition: this rule only applies when one of these
   two blocks is actually a supervisory "group"/"route" block (its own
@@ -846,6 +955,19 @@ GROUP <-> COMPONENT RUN/STOP FEEDBACK IS EXPECTED, NOT OPTIONAL:
   either block's port list - do not skip it just because the summary
   text is thin on the subject; the existence of matching port names on
   both sides is itself strong evidence this connection is real.
+
+SAFETY INTERLOCK FROM ALARM / LIMIT-EXCEEDED OUTPUTS:
+- If one block exposes an alarm/limit-exceeded-style output (e.g. a
+  high-high, high, low, or low-low limit output, or any output whose
+  name or description signals an abnormal condition) and the other
+  block has an interlock/protection/stop-style input (e.g. IntStop,
+  IntProtG, IntProtA, or similarly described), and the summaries or the
+  user's guidance describe this kind of protective relationship between
+  them, connect the alarm output to that interlock/stop input so the
+  abnormal condition actually stops or blocks the second block. This is
+  a real safety-wiring pattern (e.g. an over-temperature reading
+  tripping a motor), not just a nice-to-have - include it under the same
+  "essential wiring" standard as start/stop/run feedback above.
 
 WATCH FOR INVERTED / SPLIT SIGNALS:
 - Sometimes one output feeds two different input ports on the other
@@ -939,12 +1061,258 @@ def validate_connections(connections: list, blocks_by_name: dict) -> list:
     return valid
 
 
+START_PORT_RE = re.compile(r"start", re.IGNORECASE)
+STOP_PORT_RE = re.compile(r"stop|quickstp", re.IGNORECASE)
+
+
+def insert_start_stop_interlocks(connections: list, blocks_by_name: dict) -> tuple:
+    """Deterministic safety-wiring pattern - not left to the model, since
+    it's a fixed rule rather than a judgment call: if a destination
+    block gets its start-type command from one source block and its
+    stop-type command from a DIFFERENT source block - the classic
+    separate start/stop pushbutton setup - splice in a small synthetic
+    AND gate between them (start signal AND NOT stop signal) instead of
+    wiring both buttons straight into the destination. This stops the
+    destination from ever seeing a contradictory "start AND stop both
+    pressed" state as a bare start command.
+
+    A destination port counts as "start-type"/"stop-type" if either its
+    bare name (e.g. StartLoc/StopLoc) OR its documented description
+    (e.g. an abbreviated port like "ESR" described as "Local start
+    pushbutton") matches START_PORT_RE/STOP_PORT_RE - matching on name
+    alone isn't enough, since different Siemens manuals abbreviate these
+    ports very differently and the description is often the only place
+    the actual meaning ("start"/"stop") is spelled out in English.
+
+    Returns (new_connections, new_gate_blocks) - gate blocks are
+    synthetic (not loaded from any file) and only exist for this
+    diagram; add them to the block list handed to draw_diagram."""
+
+    def port_search_text(block_name, port_name):
+        block = blocks_by_name.get(block_name, {})
+        match = next((p for p in block.get("inputs", []) if p["name"] == port_name), None)
+        return f"{port_name} {(match or {}).get('description', '')}"
+
+    by_destination: dict = {}
+    for c in connections:
+        by_destination.setdefault(c["to_block"], []).append(c)
+
+    gate_blocks = []
+    new_connections = list(connections)
+
+    for to_block, dest_conns in by_destination.items():
+        start_conn = next(
+            (c for c in dest_conns if START_PORT_RE.search(port_search_text(to_block, c["to_port"]))), None
+        )
+        stop_conn = next(
+            (c for c in dest_conns if STOP_PORT_RE.search(port_search_text(to_block, c["to_port"]))), None
+        )
+        if not start_conn or not stop_conn or start_conn["from_block"] == stop_conn["from_block"]:
+            continue  # no separate start/stop sources feeding this block - nothing to protect
+
+        gate_name = f"AND_{to_block}"
+        gate_blocks.append({
+            "block_name": gate_name,
+            "block_type": "AND",
+            "description": f"Prevents a simultaneous start+stop command from reaching "
+                            f"{to_block}'s {start_conn['to_port']} input.",
+            "inputs": [
+                {"name": "IN1", "datatype": "BOOL", "description": "Start command"},
+                {"name": "IN2", "datatype": "BOOL", "description": "Stop command (inverted)"},
+            ],
+            "outputs": [{"name": "OUT", "datatype": "BOOL", "description": "Gated start command"}],
+        })
+
+        new_connections.remove(start_conn)
+        new_connections.remove(stop_conn)
+        new_connections.append({
+            "from_block": start_conn["from_block"], "from_port": start_conn["from_port"],
+            "to_block": gate_name, "to_port": "IN1",
+            "reason": "Start command into the start/stop safety AND gate",
+            "confidence": 0.99, "inverted": False,
+        })
+        new_connections.append({
+            "from_block": stop_conn["from_block"], "from_port": stop_conn["from_port"],
+            "to_block": gate_name, "to_port": "IN2",
+            "reason": "Stop command (inverted) into the start/stop safety AND gate",
+            "confidence": 0.99, "inverted": True,
+        })
+        new_connections.append({
+            "from_block": gate_name, "from_port": "OUT",
+            "to_block": to_block, "to_port": start_conn["to_port"],
+            "reason": "Gated start command to the destination block",
+            "confidence": 0.99, "inverted": False,
+        })
+
+    return new_connections, gate_blocks
+
+
+def infer_logic_gates(blocks_by_name: dict, connections: list, user_guidance: str) -> tuple:
+    """General-purpose logic-gate synthesis - unlike the deterministic
+    start/stop AND gate above (a fixed rule that always fires), this is
+    exploratory: given the full picture (every block's real ports, every
+    already-inferred connection, and the user's own free-text guidance),
+    ask Grok whether any other 2-input logic gate (AND/OR/NOR) should be
+    inserted to embed control logic the user actually described that a
+    plain block-to-block wire can't express - e.g. "trip if either of
+    two alarms fires" needs an OR gate. Only runs (and only costs tokens)
+    when user_guidance is non-empty, since without it there's no
+    reliable signal for what extra logic - if any - the user wants
+    beyond what plain per-pair connection inference already covers.
+
+    Every gate has exactly 2 inputs (IN1, IN2) and 1 output (OUT) - a
+    single-signal inversion (NOT) doesn't need its own gate, it's just
+    an "inverted": true connection, same as everywhere else in this
+    pipeline. Every proposed connection is validated against the real
+    (or newly-proposed-gate) port lists before being accepted, same as
+    validate_connections does for normal connections.
+
+    Returns (new_connections, new_gate_blocks); (connections, [])
+    unchanged if user_guidance is empty or Grok proposes nothing."""
+    if not user_guidance.strip():
+        return connections, []
+
+    system_prompt = (
+        "You are a careful industrial automation engineering assistant. "
+        "Output only valid JSON."
+    )
+
+    blocks_summary = {
+        name: {"inputs": [p["name"] for p in b["inputs"]], "outputs": [p["name"] for p in b["outputs"]]}
+        for name, b in blocks_by_name.items()
+    }
+
+    user_prompt = f"""
+Below is the full picture of one control diagram: every block's real
+port names, every connection already inferred between them, and the
+user's own free-text guidance about their application.
+
+Your task: decide whether any 2-input logic gate (AND, OR, or NOR)
+should be inserted to correctly embed control logic the user described
+that a plain block-to-block wire can't express by itself - e.g. "trip
+if either alarm fires" needs an OR gate; "run only if both permissives
+are true" needs an AND gate. Do NOT propose a gate unless the user's
+guidance (or an unambiguous combination of documented signals) clearly
+calls for combining two specific signals before they reach a specific
+destination port - a plausible-sounding guess is worse than no gate at
+all here. The classic separate start/stop pushbutton safety interlock
+is already handled elsewhere automatically - do not propose it again;
+only propose genuinely NEW logic beyond that.
+
+STRICT RULES:
+- Only reference block/port names that literally appear below.
+- Each gate has exactly 2 inputs (IN1, IN2) and 1 output (OUT) - for a
+  single-signal inversion (NOT), just mark the relevant connection's
+  "inverted" as true instead of inventing a gate for it.
+- For every gate you propose, you MUST also say which existing
+  connection(s) it replaces (in "remove_connections") and which new
+  connections route through it instead (in "add_connections") - a gate
+  that doesn't actually connect into the diagram is useless.
+- If nothing clearly calls for a new gate, return empty lists - this is
+  the common, correct answer when the guidance doesn't describe this
+  kind of combinational logic.
+
+=== Blocks (name -> real ports) ===
+{json.dumps(blocks_summary, indent=2)}
+
+=== Already-inferred connections ===
+{json.dumps(connections, indent=2)}
+
+=== User guidance ===
+\"\"\"
+{user_guidance}
+\"\"\"
+
+Output only valid JSON in exactly this shape:
+{{
+  "gate_blocks": [
+    {{"block_name": "...", "gate_type": "AND|OR|NOR", "description": "..."}}
+  ],
+  "remove_connections": [
+    {{"from_block": "...", "from_port": "...", "to_block": "...", "to_port": "..."}}
+  ],
+  "add_connections": [
+    {{"from_block": "...", "from_port": "...", "to_block": "...", "to_port": "...", "inverted": false, "reason": "..."}}
+  ]
+}}
+""".strip()
+
+    result = call_model_json(system_prompt, user_prompt)
+
+    proposed_gates = result.get("gate_blocks", []) or []
+    gate_blocks = []
+    for g in proposed_gates:
+        gate_type = (g.get("gate_type") or "").upper()
+        name = g.get("block_name")
+        if gate_type not in ("AND", "OR", "NOR") or not name:
+            print(f"  Skipping proposed gate {g!r} - missing a name or an unknown gate_type.")
+            continue
+        gate_blocks.append({
+            "block_name": name,
+            "block_type": gate_type,
+            "description": g.get("description", ""),
+            "inputs": [
+                {"name": "IN1", "datatype": "BOOL", "description": "Gate input 1"},
+                {"name": "IN2", "datatype": "BOOL", "description": "Gate input 2"},
+            ],
+            "outputs": [{"name": "OUT", "datatype": "BOOL", "description": "Gate output"}],
+        })
+
+    if not gate_blocks:
+        return connections, []
+
+    all_names = set(blocks_by_name) | {g["block_name"] for g in gate_blocks}
+    port_lookup = {**blocks_by_name, **{g["block_name"]: g for g in gate_blocks}}
+    new_connections = list(connections)
+
+    def matches(c, spec):
+        return (c.get("from_block") == spec.get("from_block") and c.get("from_port") == spec.get("from_port")
+                and c.get("to_block") == spec.get("to_block") and c.get("to_port") == spec.get("to_port"))
+
+    for spec in result.get("remove_connections", []) or []:
+        match = next((c for c in new_connections if matches(c, spec)), None)
+        if match:
+            new_connections.remove(match)
+        else:
+            print(f"  Warning: gate step asked to remove a connection that doesn't exist: {spec}")
+
+    def has_output(block_name, port_name):
+        block = port_lookup.get(block_name)
+        return bool(block) and port_name in {p["name"] for p in block["outputs"]}
+
+    def has_input(block_name, port_name):
+        block = port_lookup.get(block_name)
+        return bool(block) and port_name in {p["name"] for p in block["inputs"]}
+
+    for spec in result.get("add_connections", []) or []:
+        from_block, from_port = spec.get("from_block"), spec.get("from_port")
+        to_block, to_port = spec.get("to_block"), spec.get("to_port")
+        if from_block not in all_names or to_block not in all_names:
+            print(f"  Dropping gate-step connection - unknown block: {spec}")
+        elif not has_output(from_block, from_port):
+            print(f"  Dropping gate-step connection - '{from_port}' is not an output of {from_block}: {spec}")
+        elif not has_input(to_block, to_port):
+            print(f"  Dropping gate-step connection - '{to_port}' is not an input of {to_block}: {spec}")
+        else:
+            new_connections.append({
+                "from_block": from_block, "from_port": from_port,
+                "to_block": to_block, "to_port": to_port,
+                "reason": spec.get("reason", "Logic gate wiring"),
+                "confidence": spec.get("confidence", 0.85),
+                "inverted": bool(spec.get("inverted", False)),
+            })
+
+    print(f"  Inferred {len(gate_blocks)} additional logic gate(s): {[g['block_name'] for g in gate_blocks]}")
+    return new_connections, gate_blocks
+
+
 # ---------------------------------------------------------------------
 # Deterministic drawing (fixed layout code, not LLM-generated)
 # ---------------------------------------------------------------------
 
 ROW_HEIGHT = 1.0
 TITLE_HEIGHT = 3
+ANNOTATION_LINE_HEIGHT = 0.75  # extra vertical space per annotation line beyond the first
 BOX_WIDTH = 6.0
 GAP = 14.0  # horizontal gap between adjacent boxes, leaves room for labels + wires
 VERTICAL_GAP = 3.0  # vertical space between stacked component boxes in hub-and-spoke mode
@@ -955,9 +1323,28 @@ def is_group_block(block: dict) -> bool:
     return "group" in block.get("block_type", "").strip().lower()
 
 
+def annotation_lines(block: dict) -> list:
+    """Optional custom subtitle lines for one block (block["annotation"]
+    in its io_jsons/*.json, a string that can contain "\\n" for multiple
+    lines) shown under the block name instead of the default block_type
+    text - e.g. to surface fixed engineering setpoints (alarm limits,
+    scale range, etc.) for this specific project without hardcoding them
+    into the drawing code. Empty list if the block has no "annotation"."""
+    text = (block.get("annotation") or "").strip()
+    return text.split("\n") if text else []
+
+
+def title_height(block: dict) -> float:
+    """Title band height for one block: the default TITLE_HEIGHT, plus
+    room for any annotation lines beyond the first (which already fits
+    in the same space the single-line block_type subtitle used)."""
+    extra_lines = max(len(annotation_lines(block)) - 1, 0)
+    return TITLE_HEIGHT + extra_lines * ANNOTATION_LINE_HEIGHT
+
+
 def block_height(block: dict) -> float:
     n_rows = max(len(block["inputs"]), len(block["outputs"]), 1)
-    return (n_rows + 1) * ROW_HEIGHT + TITLE_HEIGHT
+    return (n_rows + 1) * ROW_HEIGHT + title_height(block)
 
 
 def box_layout(block: dict, box_left: float, box_bottom: float = 0.0) -> dict:
@@ -966,7 +1353,7 @@ def box_layout(block: dict, box_left: float, box_bottom: float = 0.0) -> dict:
     box_top = box_bottom + block_height(block)
 
     def pin_ys(n):
-        top_of_pins = box_top - TITLE_HEIGHT - ROW_HEIGHT * 0.5
+        top_of_pins = box_top - title_height(block) - ROW_HEIGHT * 0.5
         return [top_of_pins - i * ROW_HEIGHT for i in range(n)]
 
     return {
@@ -1061,28 +1448,120 @@ def layout_hub_and_spokes(group_block: dict, component_blocks: list) -> dict:
     return layouts
 
 
+def load_manual_layout(blocks_by_name: dict, connections: list) -> list:
+    """Optional manual override for block placement (layout.json next to
+    this script): a JSON object like {"columns": [["A"], ["B", "C"],
+    ["D"]]} - each inner list is one column, stacked vertically,
+    left-to-right in the order given. Lets you pin an exact arrangement
+    that pure data-flow ordering can't express on its own - e.g. two
+    sibling blocks with no connection between them (so nothing in the
+    connection graph says which should be left/right of the other, or
+    that they belong in the same column) still need a specific spot.
+
+    A block layout.json doesn't mention yet (most commonly a synthetic
+    logic-gate block, whose name is only decided at run time) doesn't
+    invalidate the whole thing - it's inserted automatically right after
+    the rightmost column any of its source blocks appears in, so e.g. a
+    gate fed by two buttons in column 1 lands in a new column 2, ahead
+    of whatever was already there (like the motor at column 2), instead
+    of being silently ignored or dumped somewhere nonsensical.
+
+    Returns None (falls back to the automatic topological layout) only
+    if the file is missing, or if it names a block that doesn't actually
+    exist."""
+    if not os.path.exists(LAYOUT_PATH):
+        return None
+
+    with open(LAYOUT_PATH, "r", encoding="utf-8") as f:
+        spec = json.load(f)
+
+    columns_of_names = [list(column) for column in spec.get("columns", [])]
+    named = [name for column in columns_of_names for name in column]
+    unknown = [name for name in named if name not in blocks_by_name]
+    if unknown:
+        print(f"Warning: {LAYOUT_PATH} lists unknown block(s) {unknown} - ignoring it and "
+              f"falling back to automatic left-to-right ordering.")
+        return None
+
+    missing = [name for name in blocks_by_name if name not in named]
+    if missing:
+        col_index = {name: i for i, column in enumerate(columns_of_names) for name in column}
+        sources_of = {}
+        for c in connections:
+            if c["to_block"] in missing:
+                sources_of.setdefault(c["to_block"], []).append(c["from_block"])
+
+        for name in missing:
+            known_source_cols = [col_index[s] for s in sources_of.get(name, []) if s in col_index]
+            insert_at = min((max(known_source_cols) + 1) if known_source_cols else len(columns_of_names),
+                             len(columns_of_names))
+            columns_of_names.insert(insert_at, [name])
+            col_index = {n: i for i, column in enumerate(columns_of_names) for n in column}
+
+        print(f"Note: {LAYOUT_PATH} doesn't mention {missing} - auto-placed based on their "
+              f"source blocks' columns. Add them to {LAYOUT_PATH} yourself to pin their exact position.")
+
+    return [[blocks_by_name[name] for name in column] for column in columns_of_names]
+
+
+def layout_columns(columns: list) -> dict:
+    """Place blocks in explicit left-to-right columns (each column a
+    list of blocks stacked vertically, top-aligned to the tallest
+    column) per an optional manual layout.json override - the general
+    form of layout_hub_and_spokes's single-group-plus-stack layout, for
+    an arbitrary number of columns."""
+    layouts = {}
+    stack_heights = [
+        sum(block_height(b) for b in column) + VERTICAL_GAP * max(len(column) - 1, 0)
+        for column in columns
+    ]
+    top = max(stack_heights)
+
+    x = 0.0
+    for column in columns:
+        y = top
+        for block in column:
+            height = block_height(block)
+            bottom = y - height
+            layouts[block["block_name"]] = box_layout(block, box_left=x, box_bottom=bottom)
+            y = bottom - VERTICAL_GAP
+        x += BOX_WIDTH + GAP
+
+    return layouts
+
+
 def draw_block(ax, block: dict, layout: dict, instance_no: int) -> None:
     left, right, top, bottom = layout["left"], layout["right"], layout["top"], layout["bottom"]
+    t_height = title_height(block)
 
     ax.add_patch(patches.Rectangle((left, bottom), BOX_WIDTH, top - bottom,
                                     edgecolor="black", facecolor="white", linewidth=1.5, zorder=2))
-    ax.add_patch(patches.Rectangle((left, top - TITLE_HEIGHT), BOX_WIDTH, TITLE_HEIGHT,
+    ax.add_patch(patches.Rectangle((left, top - t_height), BOX_WIDTH, t_height,
                                     edgecolor="black", facecolor="white", linewidth=1.5, zorder=2))
     tag_w, tag_h = BOX_WIDTH * 0.42, TITLE_HEIGHT * 0.45
     ax.add_patch(patches.Rectangle((right - tag_w - 0.15, top - tag_h - 0.15), tag_w, tag_h,
                                     edgecolor="black", facecolor="#bfe3e3", linewidth=1, zorder=3))
 
-    block_type = block["block_type"]
-    if len(block_type) > 14:
-        block_type = block_type[:13] + "…"
-
     ax.text(left + 0.15, top - 0.5, str(instance_no), fontsize=7, va="top", ha="left", zorder=4)
     ax.text(left + 0.15, top - 1.3, block["block_name"], fontsize=8, fontweight="bold", va="top", ha="left", zorder=4)
-    ax.text(left + 0.15, top - 2.25, block_type, fontsize=6, va="top", ha="left", zorder=4)
 
+    lines = annotation_lines(block)
+    if lines:
+        for i, line in enumerate(lines):
+            ax.text(left + 0.15, top - 2.25 - i * ANNOTATION_LINE_HEIGHT, line,
+                    fontsize=6, va="top", ha="left", zorder=4)
+    else:
+        block_type = block["block_type"]
+        if len(block_type) > 14:
+            block_type = block_type[:13] + "…"
+        ax.text(left + 0.15, top - 2.25, block_type, fontsize=6, va="top", ha="left", zorder=4)
+
+    port_values = block.get("port_values", {})
     for y, port in zip(layout["input_ys"], block["inputs"]):
         ax.plot([left - STUB, left], [y, y], color="black", linewidth=1, zorder=1)
-        ax.text(left - STUB - 0.15, y, port["name"], fontsize=7, family="monospace",
+        value = port_values.get(port["name"])
+        label = f"{value}-{port['name']}" if value is not None else port["name"]
+        ax.text(left - STUB - 0.15, y, label, fontsize=7, family="monospace",
                 va="center", ha="right", zorder=4)
 
     for y, port in zip(layout["output_ys"], block["outputs"]):
@@ -1104,6 +1583,30 @@ def connection_colors(n: int) -> list:
     are more connections than one palette provides."""
     palette = list(plt.get_cmap("tab20").colors) + list(plt.get_cmap("tab20b").colors)
     return [palette[i % len(palette)] for i in range(n)]
+
+
+CHAR_WIDTH_ESTIMATE = 0.42  # rough monospace glyph width (data units) at the pin-label fontsize
+
+
+def pin_label_text(block: dict, port: dict, side: str) -> str:
+    """The exact text draw_block renders for one pin's label - kept in
+    sync with draw_block so routing can measure it accurately (an input
+    with a configured port_values entry is longer than its bare name,
+    e.g. "90.0-VAL_HH" instead of just "VAL_HH")."""
+    if side == "inputs":
+        value = block.get("port_values", {}).get(port["name"])
+        return f"{value}-{port['name']}" if value is not None else port["name"]
+    return port["name"]
+
+
+def label_clearance(block: dict, side: str) -> float:
+    """How far a wire needs to travel out from this block before it's
+    clear of every pin label on the given side, so a highway wire's
+    vertical run doesn't cut straight through unrelated pins' label
+    text on its way to the shared basement lane."""
+    ports = block.get(side, [])
+    widest = max((len(pin_label_text(block, p, side)) for p in ports), default=0)
+    return STUB + widest * CHAR_WIDTH_ESTIMATE
 
 
 def draw_connections(ax, connections: list, blocks_by_name: dict, layouts: dict, is_forward) -> None:
@@ -1151,12 +1654,19 @@ def draw_connections(ax, connections: list, blocks_by_name: dict, layouts: dict,
         else:
             from_lane_count[from_name] = from_lane_count.get(from_name, 0) + 1
             to_lane_count[to_name] = to_lane_count.get(to_name, 0) + 1
-            x1 = from_layout["right"] + STUB + (from_lane_count[from_name] - 1) * side_stagger
-            x2 = to_layout["left"] - STUB - (to_lane_count[to_name] - 1) * side_stagger
+            x1 = (from_layout["right"] + label_clearance(blocks_by_name[from_name], "outputs")
+                  + (from_lane_count[from_name] - 1) * side_stagger)
+            x2 = (to_layout["left"] - label_clearance(blocks_by_name[to_name], "inputs")
+                  - (to_lane_count[to_name] - 1) * side_stagger)
             wrap_y = lowest_bottom - (2 + wrap_count * wrap_offset)
             wrap_count += 1
-            xs = [x1, x1, x2, x2]
-            ys = [y_from, wrap_y, wrap_y, y_to]
+            # Explicitly draw the horizontal run from the pin itself out
+            # to x1/x2 (not just the vertical drop) - without this, the
+            # line only started AT x1/x2, leaving a visible gap between
+            # the pin and where the wire actually begins whenever the
+            # label-clearance offset is bigger than the tiny pin stub.
+            xs = [from_layout["right"], x1, x1, x2, x2, to_layout["left"]]
+            ys = [y_from, y_from, wrap_y, wrap_y, y_to, y_to]
 
         ax.plot(xs, ys, color=color, linewidth=1.4, zorder=1)
         ax.plot(xs[0], ys[0], marker="s", markersize=4, color=color, zorder=5)
@@ -1184,16 +1694,27 @@ def draw_diagram(blocks_in_order: list, connections: list) -> None:
         is_forward = lambda c: c["from_block"] == group_name  # noqa: E731
         ordered_for_numbering = [group_block] + component_blocks
     else:
-        # Fallback: no single group detected (zero, or more than one) -
-        # order blocks left-to-right by actual data flow (whichever block
-        # feeds another's input goes to the left of it) instead of
-        # whatever order they happened to be discovered in.
-        blocks_in_order = topological_order(blocks_in_order, connections)
-        layouts = layout_all_blocks(blocks_in_order)
-        order = [b["block_name"] for b in blocks_in_order]
-        index_of = {name: i for i, name in enumerate(order)}
-        is_forward = lambda c: index_of[c["to_block"]] == index_of[c["from_block"]] + 1  # noqa: E731
-        ordered_for_numbering = blocks_in_order
+        manual_columns = load_manual_layout(blocks_by_name, connections)
+        if manual_columns:
+            # A layout.json override is present and names every block
+            # exactly once - use its explicit column groupings instead of
+            # the automatic topological ordering below.
+            layouts = layout_columns(manual_columns)
+            col_of = {b["block_name"]: i for i, column in enumerate(manual_columns) for b in column}
+            is_forward = lambda c: col_of[c["to_block"]] == col_of[c["from_block"]] + 1  # noqa: E731
+            ordered_for_numbering = [b for column in manual_columns for b in column]
+        else:
+            # Fallback: no single group detected (zero, or more than one),
+            # and no manual layout.json override - order blocks
+            # left-to-right by actual data flow (whichever block feeds
+            # another's input goes to the left of it) instead of whatever
+            # order they happened to be discovered in.
+            blocks_in_order = topological_order(blocks_in_order, connections)
+            layouts = layout_all_blocks(blocks_in_order)
+            order = [b["block_name"] for b in blocks_in_order]
+            index_of = {name: i for i, name in enumerate(order)}
+            is_forward = lambda c: index_of[c["to_block"]] == index_of[c["from_block"]] + 1  # noqa: E731
+            ordered_for_numbering = blocks_in_order
 
     n_highway = sum(1 for c in connections if not is_forward(c))
     overall_height = max(l["top"] for l in layouts.values())
@@ -1228,6 +1749,7 @@ def main() -> None:
     ensure_all_summaries_exist()
     blocks = discover_blocks()
     apply_port_selection_mode(blocks, user_guidance)
+    assign_all_port_values(blocks, user_guidance)
     pairs = candidate_pairs(blocks, user_guidance)
     print(f"Found {len(pairs)} candidate pair(s) whose rules reference each other: {pairs}")
 
@@ -1244,12 +1766,26 @@ def main() -> None:
     blocks_by_name = {name: info["block"] for name, info in blocks.items()}
     connections = validate_connections(all_connections, blocks_by_name)
 
-    with open(CONNECTIONS_PATH, "w", encoding="utf-8") as f:
-        json.dump({"connections": connections, "uncertain_connections": all_uncertain},
-                   f, indent=2, ensure_ascii=False)
-    print(f"Saved {len(connections)} validated connections to {CONNECTIONS_PATH}")
+    # Deterministic safety gate first (always fires when the pattern
+    # exists, free), then the general Grok-driven gate step sees the
+    # already-gated picture (so it won't try to re-propose the same
+    # start/stop gate) and can add any other logic the user described.
+    connections, safety_gates = insert_start_stop_interlocks(connections, blocks_by_name)
+    if safety_gates:
+        print(f"Inserted {len(safety_gates)} safety AND gate(s): {[g['block_name'] for g in safety_gates]}")
 
-    draw_diagram([info["block"] for info in blocks.values()], connections)
+    blocks_by_name_with_gates = {**blocks_by_name, **{g["block_name"]: g for g in safety_gates}}
+    connections, extra_gates = infer_logic_gates(blocks_by_name_with_gates, connections, user_guidance)
+    gate_blocks = safety_gates + extra_gates
+
+    # The final, post-gate state is what gets saved - redraw.py just
+    # loads this directly, no need to recompute any gate logic.
+    with open(CONNECTIONS_PATH, "w", encoding="utf-8") as f:
+        json.dump({"connections": connections, "uncertain_connections": all_uncertain, "gate_blocks": gate_blocks},
+                   f, indent=2, ensure_ascii=False)
+    print(f"Saved {len(connections)} connections ({len(gate_blocks)} gate block(s)) to {CONNECTIONS_PATH}")
+
+    draw_diagram([info["block"] for info in blocks.values()] + gate_blocks, connections)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,92 @@
+{
+  "block_name": "Sensor_DI",
+  "block_type": "Digital Input Signal Processing Block",
+  "description": "The Sensor_DI block processes channel-specific signal functions cyclically for a digital input value from S7-300/400 SM digital input modules in a cement plant application.",
+  "inputs": [
+    {
+      "name": "VALUE",
+      "datatype": "BOOL",
+      "description": "the digital input value from the process image"
+    },
+    {
+      "name": "VALUE_QC",
+      "datatype": "BOOL",
+      "description": "the value status of the digital input channel"
+    },
+    {
+      "name": "MODE",
+      "datatype": "DWORD",
+      "description": "the mode input parameter"
+    },
+    {
+      "name": "PQC",
+      "datatype": "BOOL",
+      "description": "enables the use of the value status in the process image if set to TRUE"
+    },
+    {
+      "name": "SIM_I",
+      "datatype": "BOOL",
+      "description": "the simulation value input parameter"
+    },
+    {
+      "name": "SIM_ON",
+      "datatype": "BOOL",
+      "description": "activates simulation mode if set to TRUE"
+    },
+    {
+      "name": "SUBS_I",
+      "datatype": "BOOL",
+      "description": "the substitute value input parameter"
+    },
+    {
+      "name": "SUBS_ON",
+      "datatype": "BOOL",
+      "description": "enables substitution mode if set to TRUE"
+    },
+    {
+      "name": "LAST_ON",
+      "datatype": "BOOL",
+      "description": "enables the hold last value function if set to TRUE"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "Q",
+      "datatype": "BOOL",
+      "description": "the processed digital output value"
+    },
+    {
+      "name": "QBAD",
+      "datatype": "BOOL",
+      "description": "indicates an invalid process value if set to TRUE"
+    },
+    {
+      "name": "QLAST",
+      "datatype": "BOOL",
+      "description": "indicates that the last valid value is being output if set to TRUE"
+    },
+    {
+      "name": "QMOD_ERR",
+      "datatype": "BOOL",
+      "description": "indicates a higher-level error if set to TRUE"
+    },
+    {
+      "name": "QSIM",
+      "datatype": "BOOL",
+      "description": "indicates simulation mode if set to TRUE"
+    },
+    {
+      "name": "QSUBS",
+      "datatype": "BOOL",
+      "description": "indicates substitution mode if set to TRUE"
+    },
+    {
+      "name": "QUALITY",
+      "datatype": "BYTE",
+      "description": "the quality code of the output value"
+    }
+  ],
+  "port_values": {
+    "VALUE": "0"
+  }
+}

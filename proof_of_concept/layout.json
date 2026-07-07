@@ -1,0 +1,7 @@
+{
+  "columns": [
+    ["C_MEASUR"],
+    ["StartButton_DI", "StopButton_DI"],
+    ["C_DRV_1D"]
+  ]
+}
