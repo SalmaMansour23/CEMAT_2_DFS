@@ -38,7 +38,7 @@ import threading
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import gradio as gr
+import gradio as gr  # type: ignore[reportMissingImports]
 
 import generate_diagram as pipeline
 
@@ -142,11 +142,30 @@ def respond(message: dict, history: list):
     yield history, gr.MultimodalTextbox(value=None, interactive=True)
 
 
-with gr.Blocks(title="CEMAT Block Diagram Generator") as demo:
-    gr.Markdown(
-        "# CEMAT Block Diagram Generator\n"
-        "Describe your application and attach the raw CEMAT manual(s) in markdown for the blocks in your project"
-    )
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "asec_logo.png")
+
+# Pins the logo column to the top-right corner instead of centering it in
+# whatever leftover flex space Gradio's Row/Column layout gives it.
+HEADER_CSS = """
+.logo-col { display: flex; justify-content: flex-end; align-items: flex-start; }
+"""
+
+with gr.Blocks(title="CEMAT Block Diagram Generator", css=HEADER_CSS) as demo:
+    with gr.Row():
+        with gr.Column(scale=1):
+            gr.Markdown(
+                "# CEMAT Block Diagram Generator\n"
+                "Describe your application and attach the raw CEMAT manual(s) in markdown for the blocks in your project"
+            )
+        with gr.Column(scale=0, min_width=140, elem_classes=["logo-col"]):
+            gr.Image(
+                LOGO_PATH,
+                show_label=False,
+                container=False,
+                buttons=[],
+                interactive=False,
+                height=140,
+            )
     chatbot = gr.Chatbot(height=600, label="Diagram Assistant")
     msg_box = gr.MultimodalTextbox(
         file_types=[".md"],
