@@ -1,11 +1,21 @@
 {
   "connections": [
     {
+      "from_block": "Sensor_DI",
+      "from_port": "Q",
+      "to_block": "C_DRV_1D",
+      "to_port": "EBVG",
+      "reason": "Sensor output provides a remote safety operating interlock into the motor",
+      "confidence": 1.0,
+      "inverted": false,
+      "role": "other"
+    },
+    {
       "from_block": "StopButton_DI",
       "from_port": "Q",
       "to_block": "C_DRV_1D",
       "to_port": "EBFA",
-      "reason": "Stop button output connects to motor stop command",
+      "reason": "Stop button output connects to motor stop input",
       "confidence": 1.0,
       "inverted": false,
       "role": "stop"
@@ -41,13 +51,23 @@
   "uncertain_connections": [
     {
       "from_block": "C_DRV_1D",
-      "from_port": "EBFE",
-      "to_block": "StopButton_DI",
+      "from_port": "EBFA",
+      "to_block": "StartButton_DI",
       "to_port": "None",
-      "reason": "Start button connection not explicitly defined in provided information",
+      "reason": "No stop button output described in StartButton_DI, so cannot connect EBFA",
       "confidence": 0.0,
       "inverted": false,
-      "role": "start"
+      "role": "stop"
+    },
+    {
+      "from_block": "StartButton_DI",
+      "from_port": "None",
+      "to_block": "C_DRV_1D",
+      "to_port": "EBVG",
+      "reason": "Sensor output should connect to EBVG for remote safety operating interlock, but sensor block not provided",
+      "confidence": 0.0,
+      "inverted": false,
+      "role": "other"
     }
   ],
   "gate_blocks": [

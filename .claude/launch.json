@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "diagram-app",
+      "runtimeExecutable": "D:\\Salma\\ASECAutomation Internship Summer 2026\\diagram_to_text\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["proof_of_concept/app.py"],
+      "port": 7860
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "block_name": "C_DRV_1D",
   "block_type": "Motor Drive",
-  "description": "Unidirectional motor drive in a cement plant controlled via automatic/remote command inputs",
+  "description": "Unidirectional motor drive in a cement plant with remote start/stop and safety interlock",
   "is_input_device": false,
   "is_group": false,
   "inputs": [
@@ -9,25 +9,32 @@
       "name": "EBFE",
       "datatype": "BOOL",
       "description": "Automatic start command",
-      "reason": "Needed to start the motor remotely"
+      "reason": "The start button remotely starts the motor via this input"
     },
     {
       "name": "EBFA",
       "datatype": "BOOL",
       "description": "Automatic stop command",
-      "reason": "Needed to stop the motor remotely"
+      "reason": "The stop button remotely stops the motor via this input"
+    },
+    {
+      "name": "EBVG",
+      "datatype": "BOOL",
+      "description": "Operating interlock",
+      "reason": "The sensor output provides a remote safety operating interlock into the motor via this input"
     }
   ],
   "outputs": [
     {
       "name": "EVS",
       "datatype": "BOOL",
-      "description": "Running signal in automatic or single-start mode",
-      "reason": "Needed as the main output signal to indicate motor status"
+      "description": "Running signal",
+      "reason": "The main output signal is needed to indicate the motor's running status"
     }
   ],
   "port_values": {
     "EBFE": "false",
-    "EBFA": "false"
+    "EBFA": "false",
+    "EBVG": "true"
   }
 }

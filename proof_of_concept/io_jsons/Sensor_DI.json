@@ -1,7 +1,7 @@
 {
-  "block_name": "StopButton_DI",
+  "block_name": "Sensor_DI",
   "block_type": "Digital Input Channel",
-  "description": "Stop button digital input",
+  "description": "Sensor_DI block for signal processing of a digital input value",
   "is_input_device": true,
   "is_group": false,
   "inputs": [],
@@ -10,10 +10,10 @@
       "name": "Q",
       "datatype": "BOOL",
       "description": "Processed digital output value",
-      "reason": "The processed stop button signal is needed to control the motor"
+      "reason": "The sensor output provides a remote safety operating interlock into the motor"
     }
   ],
   "port_values": {
-    "VALUE": "FALSE"
+    "VALUE": "false"
   }
 }
